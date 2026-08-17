@@ -9,6 +9,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -34,8 +36,10 @@ fun DtcScannerScreen(
     onStartScan: () -> Unit,
     onClearDtcs: () -> Unit,
     onNavigateToAiMechanic: () -> Unit,
+    onExportPdfReport: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -133,7 +137,7 @@ fun DtcScannerScreen(
             }
 
             if (dtcCodes.isNotEmpty()) {
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(8.dp))
                 OutlinedButton(
                     onClick = onClearDtcs,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = RedCritical),
@@ -144,7 +148,21 @@ fun DtcScannerScreen(
                     Text("ลบโค้ด")
                 }
             }
+
+            if (onExportPdfReport != null) {
+                Spacer(modifier = Modifier.width(8.dp))
+                FilledTonalButton(
+                    onClick = onExportPdfReport,
+                    colors = ButtonDefaults.filledTonalButtonColors(containerColor = SurfaceCard, contentColor = CyanPrimary),
+                    modifier = Modifier.testTag("btn_export_pdf_report")
+                ) {
+                    Icon(Icons.Default.PictureAsPdf, contentDescription = "Export PDF", modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("PDF")
+                }
+            }
         }
+
 
         Spacer(modifier = Modifier.height(16.dp))
 

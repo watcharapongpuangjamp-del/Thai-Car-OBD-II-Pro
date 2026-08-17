@@ -23,6 +23,8 @@ import com.example.ui.theme.SurfaceDark
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.viewmodel.MainViewModel
+import kotlinx.coroutines.launch
+
 
 sealed class Screen(val route: String, val titleTh: String, val icon: ImageVector) {
     object Dashboard : Screen("dashboard", "หน้าวัดค่า", Icons.Default.Speed)
@@ -46,9 +48,16 @@ fun ThaiObdApp(viewModel: MainViewModel) {
     val profiles by viewModel.vehicleProfiles.collectAsStateWithLifecycle()
     val selectedProfile by viewModel.selectedProfile.collectAsStateWithLifecycle()
     val currentScenario by viewModel.currentScenario.collectAsStateWithLifecycle()
+    val tripSummary by viewModel.currentTripSummary.collectAsStateWithLifecycle(initialValue = null)
+    val tripStatus by viewModel.activeTripStatus.collectAsStateWithLifecycle(initialValue = com.example.model.TripStatus.PAUSED)
+    val diagnosticReport by viewModel.diagnosticRuleReport.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
+
             TopAppBar(
                 title = {
                     Column {
@@ -59,7 +68,7 @@ fun ThaiObdApp(viewModel: MainViewModel) {
                             color = TextPrimary
                         )
                         Text(
-                            text = "v2.5.0 Production Pro",
+                            text = "v2.6.0 Pro (OBD-II Engine)",
                             fontSize = 11.sp,
                             color = CyanPrimary
                         )
@@ -112,10 +121,17 @@ fun ThaiObdApp(viewModel: MainViewModel) {
                     telemetry = telemetry,
                     activeMode = activeMode,
                     currentScenario = currentScenario,
+                    diagnosticReport = diagnosticReport,
+                    tripSummary = tripSummary,
+                    tripStatus = tripStatus,
+                    onStartTrip = { viewModel.startTrip() },
+                    onPauseTrip = { viewModel.pauseTrip() },
+                    onStopTrip = { viewModel.stopTrip() },
                     onModeSelected = { viewModel.setMode(it) },
                     onConnectUsb = { viewModel.connectUsbHardware() },
                     onDisconnectUsb = { viewModel.disconnectUsbHardware() },
-                    onScenarioSelected = { viewModel.setSimulatorScenario(it) }
+                    onScenarioSelected = { viewModel.setSimulatorScenario(it) },
+                    onNavigateToAiMechanic = { currentScreen = Screen.AiMechanic }
                 )
                 Screen.DtcScan -> DtcScannerScreen(
                     dtcCodes = dtcCodes,
@@ -123,8 +139,19 @@ fun ThaiObdApp(viewModel: MainViewModel) {
                     activeMode = activeMode,
                     onStartScan = { viewModel.scanDtcs() },
                     onClearDtcs = { viewModel.clearDtcs() },
-                    onNavigateToAiMechanic = { currentScreen = Screen.AiMechanic }
+                    onNavigateToAiMechanic = { currentScreen = Screen.AiMechanic },
+                    onExportPdfReport = {
+                        viewModel.exportDiagnosticPdfReport { file ->
+                            scope.launch {
+                                snackbarHostState.showSnackbar(
+                                    if (file != null) "สร้างรายงาน PDF เรียบร้อย: ${file.name}"
+                                    else "ไม่สามารถสร้างรายงาน PDF ได้"
+                                )
+                            }
+                        }
+                    }
                 )
+
                 Screen.AiMechanic -> AiMechanicScreen(
                     aiResult = aiResult,
                     isAiAnalyzing = isAiAnalyzing,

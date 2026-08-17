@@ -106,9 +106,9 @@ fun ModeHeader(
                                     .size(10.dp)
                                     .clip(RoundedCornerShape(5.dp))
                                     .background(
-                                        when (telemetry.connectionState) {
-                                            ConnectionState.CONNECTED -> EmeraldConnected
-                                            ConnectionState.DISCONNECTED -> RedCritical
+                                        when {
+                                            telemetry.connectionState == ConnectionState.CONNECTED -> EmeraldConnected
+                                            telemetry.connectionState.isError || telemetry.connectionState == ConnectionState.DISCONNECTED -> RedCritical
                                             else -> AmberWarning
                                         }
                                     )
@@ -129,7 +129,10 @@ fun ModeHeader(
                         )
                     }
 
-                    if (telemetry.connectionState == ConnectionState.CONNECTED) {
+                    if (telemetry.connectionState == ConnectionState.CONNECTED || 
+                        telemetry.connectionState == ConnectionState.SERIAL_READY || 
+                        telemetry.connectionState == ConnectionState.USB_OPEN ||
+                        telemetry.connectionState == ConnectionState.ADAPTER_HANDSHAKE) {
                         Button(
                             onClick = onDisconnectUsb,
                             colors = ButtonDefaults.buttonColors(containerColor = RedCritical.copy(alpha = 0.2f)),

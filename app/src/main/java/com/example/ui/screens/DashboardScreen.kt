@@ -22,6 +22,8 @@ import androidx.compose.ui.unit.sp
 import com.example.hardware.SimulatorScenario
 import com.example.model.AppOperationMode
 import com.example.model.LiveSensorData
+import com.example.rules.RuleEngineReport
+import com.example.ui.components.DiagnosticAlertComponent
 import com.example.ui.components.LiveGaugeCard
 import com.example.ui.components.ModeHeader
 import com.example.ui.theme.*
@@ -31,10 +33,17 @@ fun DashboardScreen(
     telemetry: LiveSensorData,
     activeMode: AppOperationMode,
     currentScenario: SimulatorScenario,
+    diagnosticReport: RuleEngineReport? = null,
+    tripSummary: com.example.model.TripSummary?,
+    tripStatus: com.example.model.TripStatus,
+    onStartTrip: () -> Unit,
+    onPauseTrip: () -> Unit,
+    onStopTrip: () -> Unit,
     onModeSelected: (AppOperationMode) -> Unit,
     onConnectUsb: () -> Unit,
     onDisconnectUsb: () -> Unit,
     onScenarioSelected: (SimulatorScenario) -> Unit,
+    onNavigateToAiMechanic: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -56,7 +65,17 @@ fun DashboardScreen(
             onScenarioSelected = onScenarioSelected
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Diagnostic Alert Component (Rule Engine Safety Shield)
+        diagnosticReport?.let { report ->
+            DiagnosticAlertComponent(
+                report = report,
+                onConsultAiClick = onNavigateToAiMechanic,
+                initiallyExpanded = report.anomalies.isNotEmpty()
+            )
+            Spacer(modifier = Modifier.height(14.dp))
+        }
 
         // ECU Communication Stats Bar
         Card(
@@ -218,6 +237,107 @@ fun DashboardScreen(
                 testTag = "gauge_fuel_rate",
                 modifier = Modifier.weight(1f)
             )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Trip Computer HUD Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("trip_computer_card"),
+            colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "ระบบบันทึกทริป (Trip Computer)",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary
+                    )
+
+                    Row {
+                        if (tripStatus == com.example.model.TripStatus.RECORDING) {
+                            Button(
+                                onClick = onPauseTrip,
+                                colors = ButtonDefaults.buttonColors(containerColor = AmberWarning),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(32.dp)
+                            ) {
+                                Text("พักทริป", fontSize = 11.sp, color = DarkBackground)
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Button(
+                                onClick = onStopTrip,
+                                colors = ButtonDefaults.buttonColors(containerColor = RedCritical),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(32.dp)
+                            ) {
+                                Text("จบทริป", fontSize = 11.sp, color = androidx.compose.ui.graphics.Color.White)
+                            }
+                        } else {
+                            Button(
+                                onClick = onStartTrip,
+                                colors = ButtonDefaults.buttonColors(containerColor = EmeraldConnected),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.height(32.dp)
+                            ) {
+                                Text(if (tripSummary != null) "บันทึกต่อ" else "เริ่มทริปใหม่", fontSize = 11.sp, color = DarkBackground)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text("ระยะทาง", fontSize = 11.sp, color = TextSecondary)
+                        Text(
+                            text = tripSummary?.let { "${it.distanceKm} km" } ?: "0.0 km",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = CyanPrimary
+                        )
+                    }
+                    Column {
+                        Text("ความเร็วเฉลี่ย", fontSize = 11.sp, color = TextSecondary)
+                        Text(
+                            text = tripSummary?.let { "${it.avgSpeedKmh} km/h" } ?: "0.0 km/h",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = EmeraldConnected
+                        )
+                    }
+                    Column {
+                        Text("อัตราสิ้นเปลือง", fontSize = 11.sp, color = TextSecondary)
+                        Text(
+                            text = tripSummary?.let { "${it.avgFuelConsumptionL100km} L/100km" } ?: "0.0 L/100km",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = AmberWarning
+                        )
+                    }
+                    Column {
+                        Text("น้ำมันที่ใช้", fontSize = 11.sp, color = TextSecondary)
+                        Text(
+                            text = tripSummary?.let { "${it.totalFuelUsedLiters} L" } ?: "0.0 L",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = PurpleGlow
+                        )
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(24.dp))

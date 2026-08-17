@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -33,6 +34,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _dtcCodes = MutableStateFlow<List<DtcCode>>(emptyList())
     val dtcCodes: StateFlow<List<DtcCode>> = _dtcCodes.asStateFlow()
+
+    val diagnosticRuleReport: StateFlow<com.example.rules.RuleEngineReport> = combine(liveTelemetry, dtcCodes) { telemetry, dtcs ->
+        repository.diagnosticRuleEngine.evaluate(telemetry, dtcs)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = repository.diagnosticRuleEngine.evaluate(
+            LiveSensorData.disconnected(AppOperationMode.REAL_HARDWARE, "เริ่มต้นระบบ"),
+            emptyList()
+        )
+    )
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
@@ -54,7 +66,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val currentScenario = repository.emulatorService.currentScenario
 
+    val activeTripStatus = repository.tripAnalytics.activeTripStatus
+    val currentTripSummary = repository.tripAnalytics.currentTripSummary
+
     init {
+        // Collect telemetry for Trip Analytics
+        viewModelScope.launch {
+            liveTelemetry.collect { sample ->
+                repository.tripAnalytics.ingestTelemetrySample(sample)
+            }
+        }
         // Initialize default vehicle profile if database is empty
         viewModelScope.launch {
             repository.allProfiles.collect { profiles ->
@@ -111,8 +132,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearDtcs() {
         viewModelScope.launch {
+            _isScanning.value = true
+            repository.clearDtcs()
             _dtcCodes.value = emptyList()
             _aiResult.value = null
+            _isScanning.value = false
         }
     }
 
@@ -170,5 +194,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             repository.saveMaintenanceLog(log)
         }
+    }
+
+    fun startTrip() {
+        repository.tripAnalytics.startOrResumeTrip(activeMode.value)
+    }
+
+    fun pauseTrip() {
+        repository.tripAnalytics.pauseTrip()
+    }
+
+    fun stopTrip(): com.example.model.TripSummary? {
+        return repository.tripAnalytics.resetAndEndTrip()
+    }
+
+    private val _lastExportedPdfPath = MutableStateFlow<String?>(null)
+    val lastExportedPdfPath: StateFlow<String?> = _lastExportedPdfPath.asStateFlow()
+
+    fun exportDiagnosticPdfReport(onComplete: ((java.io.File?) -> Unit)? = null) {
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            val profile = _selectedProfile.value
+            val currentTelemetry = liveTelemetry.value
+            val currentDtcs = _dtcCodes.value
+            val currentRuleReport = diagnosticRuleReport.value
+            val currentAi = _aiResult.value
+
+            val session = com.example.model.DiagnosticSession(
+                sessionId = "DS-${System.currentTimeMillis() % 1000000}",
+                timestamp = System.currentTimeMillis(),
+                vehicleName = profile?.name ?: "รถยนต์ทดสอบ",
+                vehicleMake = profile?.make ?: "Toyota",
+                vehicleModel = profile?.model ?: "Hilux Revo",
+                vehicleYear = profile?.year ?: 2022,
+                vehicleVin = "MHFAB22G0K${100000 + (System.currentTimeMillis() % 900000)}",
+                licensePlate = profile?.licensePlate ?: "1กข-9999 กทม.",
+                odometerKm = profile?.odometerKm ?: 125400,
+                dtcCodes = currentDtcs,
+                telemetrySnapshot = currentTelemetry,
+                ruleReport = currentRuleReport,
+                aiAnalysis = currentAi,
+                technicianName = "ช่างผู้ตรวจสอบระบบ Thai OBD-II Pro",
+                mode = activeMode.value
+            )
+
+            val exportDir = java.io.File(context.cacheDir, "reports")
+            exportDir.mkdirs()
+            val targetFile = java.io.File(exportDir, "Diagnostic_Report_${session.sessionId}.pdf")
+
+            val result = repository.pdfExporter.exportToFile(session, targetFile)
+            if (result.isSuccess) {
+                _lastExportedPdfPath.value = targetFile.absolutePath
+                onComplete?.invoke(targetFile)
+            } else {
+                onComplete?.invoke(null)
+            }
+        }
+    }
+
+    override fun onCleared() {
+
+        super.onCleared()
+        repository.release()
     }
 }

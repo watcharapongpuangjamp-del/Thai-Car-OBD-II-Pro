@@ -2,18 +2,50 @@ package com.example.hardware
 
 import android.content.Context
 import android.hardware.usb.UsbDevice
-import android.hardware.usb.UsbManager
+import android.util.Log
+import com.example.hardware.obd.Elm327Driver
+import com.example.hardware.obd.ObdProtocol
+import com.example.hardware.obd.ObdProtocolEngine
+import com.example.hardware.obd.RealDtcScanner
+import com.example.hardware.obd.TelemetryPollingEngine
+import com.example.hardware.transport.AndroidUsbTransport
+import com.example.hardware.transport.SerialConfig
+import com.example.hardware.transport.UsbTransport
+import com.example.hardware.usb.UsbDeviceEvent
+import com.example.hardware.usb.UsbPermissionManager
 import com.example.model.AppOperationMode
 import com.example.model.ConnectionState
+import com.example.model.DiagnosticError
 import com.example.model.DtcCode
-import com.example.model.DtcSeverity
 import com.example.model.LiveSensorData
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-class UsbObdDriver(private val context: Context) {
+class UsbObdDriver(
+    private val context: Context,
+    private val transport: UsbTransport = AndroidUsbTransport(context),
+    val permissionManager: UsbPermissionManager = UsbPermissionManager(context)
+) {
+
+    companion object {
+        private const val TAG = "UsbObdDriver"
+    }
+
+    private val driverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var eventListenerJob: Job? = null
+    private var telemetryCollectionJob: Job? = null
+
+    val elmDriver = Elm327Driver(transport)
+    val protocolEngine = ObdProtocolEngine(elmDriver)
+    val pollingEngine = TelemetryPollingEngine(protocolEngine, elmDriver)
+    val dtcScanner = RealDtcScanner(elmDriver)
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState = _connectionState.asStateFlow()
@@ -23,117 +55,234 @@ class UsbObdDriver(private val context: Context) {
     )
     val liveTelemetry: Flow<LiveSensorData> = _liveTelemetry
 
-    private var usbDevice: UsbDevice? = null
+    private var activeDevice: UsbDevice? = null
 
-    suspend fun checkAndConnectUsbDevice(): ConnectionState {
-        val usbManager = context.getSystemService(Context.USB_SERVICE) as? UsbManager
-        if (usbManager == null) {
-            _connectionState.value = ConnectionState.ERROR
-            _liveTelemetry.value = LiveSensorData.disconnected(
-                AppOperationMode.REAL_HARDWARE,
-                "ไม่พบระบบ USB บนอุปกรณ์นี้"
-            )
-            return ConnectionState.ERROR
+    init {
+        startLifecycleMonitoring()
+    }
+
+    fun startLifecycleMonitoring() {
+        permissionManager.startListening()
+        if (eventListenerJob == null || eventListenerJob?.isActive == false) {
+            eventListenerJob = driverScope.launch {
+                permissionManager.deviceEvents.collect { event ->
+                    when (event) {
+                        is UsbDeviceEvent.Attached -> {
+                            Log.i(TAG, "Hardware Event: Device Attached -> ${event.device.deviceName}")
+                            if (_connectionState.value == ConnectionState.DISCONNECTED || _connectionState.value.isError) {
+                                activeDevice = event.device
+                                _connectionState.value = ConnectionState.DEVICE_DETECTED
+                                _liveTelemetry.value = LiveSensorData.disconnected(
+                                    AppOperationMode.REAL_HARDWARE,
+                                    "ตรวจพบอุปกรณ์ USB: ${event.device.deviceName}"
+                                )
+                            }
+                        }
+                        is UsbDeviceEvent.Detached -> {
+                            Log.i(TAG, "Hardware Event: Device Detached -> ${event.device.deviceName}")
+                            handleDeviceDetached(event.device)
+                        }
+                        is UsbDeviceEvent.PermissionResult -> {
+                            Log.i(TAG, "Hardware Event: Permission Result for ${event.device.deviceName} = ${event.isGranted}")
+                            if (event.isGranted) {
+                                _connectionState.value = ConnectionState.PERMISSION_GRANTED
+                                _liveTelemetry.value = LiveSensorData.disconnected(
+                                    AppOperationMode.REAL_HARDWARE,
+                                    "ได้รับสิทธิ์เข้าถึงอุปกรณ์ USB แล้ว"
+                                )
+                                driverScope.launch {
+                                    proceedWithUsbOpen(event.device)
+                                }
+                            } else {
+                                _connectionState.value = ConnectionState.PERMISSION_DENIED
+                                _liveTelemetry.value = LiveSensorData.disconnected(
+                                    AppOperationMode.REAL_HARDWARE,
+                                    "ผู้ใช้ปฏิเสธการให้สิทธิ์เข้าถึงอุปกรณ์ USB"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
 
-        val deviceList = usbManager.deviceList
-        if (deviceList.isEmpty()) {
-            _connectionState.value = ConnectionState.DISCONNECTED
-            _liveTelemetry.value = LiveSensorData.disconnected(
-                AppOperationMode.REAL_HARDWARE,
-                "ไม่พบสาย USB OTG หรือ ELM327 OBD2 Adapter"
-            )
-            return ConnectionState.DISCONNECTED
-        }
-
-        // Find compatible serial/OBD device (ELM327 / FTDI / CH340 / PL2303 / CP2102)
-        val device = deviceList.values.firstOrNull()
+    suspend fun checkAndConnectUsbDevice(): ConnectionState = withContext(Dispatchers.IO) {
+        val device = permissionManager.scanForAttachedDevices()
         if (device == null) {
             _connectionState.value = ConnectionState.DISCONNECTED
             _liveTelemetry.value = LiveSensorData.disconnected(
                 AppOperationMode.REAL_HARDWARE,
-                "ไม่พบพอร์ต Serial ที่เปิดใช้งานได้"
+                "ไม่พบสาย USB OTG หรือ OBD-II Adapter เชื่อมต่ออยู่"
             )
-            return ConnectionState.DISCONNECTED
+            return@withContext ConnectionState.DISCONNECTED
         }
 
-        usbDevice = device
+        activeDevice = device
         _connectionState.value = ConnectionState.DEVICE_DETECTED
         _liveTelemetry.value = LiveSensorData.disconnected(
             AppOperationMode.REAL_HARDWARE,
-            "ตรวจพบอุปกรณ์ USB: ${device.deviceName} (Vendor ID: ${device.vendorId})"
+            "ตรวจพบอุปกรณ์: ${device.deviceName} (VID: ${device.vendorId}, PID: ${device.productId})"
         )
-        delay(300)
 
-        val hasPermission = usbManager.hasPermission(device)
-        if (!hasPermission) {
-            _connectionState.value = ConnectionState.PERMISSION_GRANTED // Request needed
+        if (!permissionManager.hasPermission(device)) {
+            Log.i(TAG, "Permission required for device ${device.deviceName}. Requesting from user...")
+            _connectionState.value = ConnectionState.PERMISSION_REQUIRED
             _liveTelemetry.value = LiveSensorData.disconnected(
                 AppOperationMode.REAL_HARDWARE,
-                "กรุณายินยอมให้แอปพลิเคชันเข้าถึง USB OTG"
+                "กรุณากดยินยอมสิทธิ์เข้าถึง USB บนหน้าจออุปกรณ์"
             )
-            return ConnectionState.PERMISSION_GRANTED
+            permissionManager.requestPermission(device)
+            return@withContext ConnectionState.PERMISSION_REQUIRED
+        }
+
+        _connectionState.value = ConnectionState.PERMISSION_GRANTED
+        return@withContext proceedWithUsbOpen(device)
+    }
+
+    private suspend fun proceedWithUsbOpen(device: UsbDevice): ConnectionState = withContext(Dispatchers.IO) {
+        // 1. USB_OPEN
+        val openResult = transport.open(device, SerialConfig(baudRate = 38400))
+        if (openResult.isFailure) {
+            val exception = openResult.exceptionOrNull()
+            Log.e(TAG, "Failed to open USB transport", exception)
+            _connectionState.value = ConnectionState.USB_OPEN_FAILED
+            _liveTelemetry.value = LiveSensorData.disconnected(
+                AppOperationMode.REAL_HARDWARE,
+                "เปิดพอร์ต USB ล้มเหลว: ${exception?.localizedMessage ?: "Unknown"}"
+            )
+            return@withContext ConnectionState.USB_OPEN_FAILED
         }
 
         _connectionState.value = ConnectionState.USB_OPEN
-        delay(200)
+        _liveTelemetry.value = LiveSensorData.disconnected(
+            AppOperationMode.REAL_HARDWARE,
+            "เปิดพอร์ต USB สำเร็จ กำลังตรวจสอบการสื่อสาร Serial"
+        )
+
+        // 2. SERIAL_READY
+        if (!transport.isOpen()) {
+            _connectionState.value = ConnectionState.SERIAL_ERROR
+            _liveTelemetry.value = LiveSensorData.disconnected(
+                AppOperationMode.REAL_HARDWARE,
+                "พอร์ต Serial ไม่พร้อมใช้งาน"
+            )
+            return@withContext ConnectionState.SERIAL_ERROR
+        }
 
         _connectionState.value = ConnectionState.SERIAL_READY
-        delay(200)
+        _liveTelemetry.value = LiveSensorData.disconnected(
+            AppOperationMode.REAL_HARDWARE,
+            "Serial Communication พร้อมใช้งาน (38400 baud, 8N1)"
+        )
 
+        // 3. ADAPTER_HANDSHAKE
         _connectionState.value = ConnectionState.ADAPTER_HANDSHAKE
-        delay(300)
+        _liveTelemetry.value = LiveSensorData.disconnected(
+            AppOperationMode.REAL_HARDWARE,
+            "กำลังส่งคำสั่ง Handshake (ATZ, ATE0, ATL0, ATSP0)..."
+        )
 
-        // In strict REAL_HARDWARE mode, without physical ECU connected, do NOT fabricate sensors.
-        // Explicitly transition to state and expose actual status:
+        val protocolResult = protocolEngine.initializeProtocolEngine()
+        if (protocolResult.isFailure) {
+            val error = protocolResult.exceptionOrNull()
+            Log.e(TAG, "Handshake failed", error)
+            val nextState = when (error) {
+                is DiagnosticError.EcuError -> ConnectionState.ECU_NOT_RESPONDING
+                is DiagnosticError.Elm327Error -> ConnectionState.ADAPTER_NOT_RESPONDING
+                is DiagnosticError.ProtocolError -> ConnectionState.PROTOCOL_DETECTION_FAILED
+                else -> ConnectionState.ERROR
+            }
+            _connectionState.value = nextState
+            _liveTelemetry.value = LiveSensorData.disconnected(
+                AppOperationMode.REAL_HARDWARE,
+                error?.localizedMessage ?: "การเชื่อมต่อกับ ELM327/ECU ล้มเหลว"
+            )
+            return@withContext nextState
+        }
+
+        val protocol = protocolResult.getOrDefault(ObdProtocol.UNKNOWN)
         _connectionState.value = ConnectionState.ADAPTER_RESPONDING
-        delay(200)
-
         _connectionState.value = ConnectionState.PROTOCOL_DETECTED
-        delay(200)
-
-        // Unless physical ECU responds to PID 0100, do not lie to UI.
         _connectionState.value = ConnectionState.ECU_RESPONDING
-        delay(200)
-
         _connectionState.value = ConnectionState.LIVE_DATA_VALIDATED
         _connectionState.value = ConnectionState.CONNECTED
 
-        _liveTelemetry.value = LiveSensorData(
-            isConnected = true,
-            connectionState = ConnectionState.CONNECTED,
-            rpm = 780, // Real idle when hardware is present
-            speedKmh = 0,
-            coolantTempC = 88,
-            batteryVoltage = 13.8f,
-            boostPressureBar = 0.05f,
-            fuelRateLph = 1.2f,
-            throttlePosPercent = 14,
-            intakeTempC = 34,
-            engineLoadPercent = 18,
-            pidPerSec = 24,
-            latencyMs = 28,
-            mode = AppOperationMode.REAL_HARDWARE,
-            statusMessage = "เชื่อมต่อสาย USB OTG กับ ECU รถยนต์เรียบร้อย"
-        )
+        // Start Real Telemetry Polling Loop
+        startPollingStream()
 
-        return ConnectionState.CONNECTED
+        return@withContext ConnectionState.CONNECTED
+    }
+
+    private fun startPollingStream() {
+        pollingEngine.startPolling()
+        telemetryCollectionJob?.cancel()
+        telemetryCollectionJob = driverScope.launch {
+            pollingEngine.telemetryFlow.collect { telemetry ->
+                _liveTelemetry.value = telemetry
+            }
+        }
+    }
+
+    private fun handleDeviceDetached(device: UsbDevice) {
+        driverScope.launch {
+            pollingEngine.stopPolling()
+            telemetryCollectionJob?.cancel()
+            transport.close()
+            activeDevice = null
+            _connectionState.value = ConnectionState.DEVICE_DISCONNECTED
+            _liveTelemetry.value = LiveSensorData.disconnected(
+                AppOperationMode.REAL_HARDWARE,
+                "อุปกรณ์ USB ถูกถอดออก (Device Detached)"
+            )
+        }
+    }
+
+    suspend fun sendCommand(command: String, timeoutMs: Int = 1000): String = withContext(Dispatchers.IO) {
+        return@withContext elmDriver.sendRawCommand(command, timeoutMs)
     }
 
     fun disconnect() {
-        usbDevice = null
-        _connectionState.value = ConnectionState.DISCONNECTED
-        _liveTelemetry.value = LiveSensorData.disconnected(
-            AppOperationMode.REAL_HARDWARE,
-            "ตัดการเชื่อมต่ออุปกรณ์ USB เรียบร้อย"
-        )
+        driverScope.launch {
+            pollingEngine.stopPolling()
+            telemetryCollectionJob?.cancel()
+            transport.close()
+            activeDevice = null
+            _connectionState.value = ConnectionState.DISCONNECTED
+            _liveTelemetry.value = LiveSensorData.disconnected(
+                AppOperationMode.REAL_HARDWARE,
+                "ตัดการเชื่อมต่ออุปกรณ์ USB เรียบร้อย"
+            )
+        }
     }
 
-    suspend fun scanRealHardwareDtcs(): List<DtcCode> {
+    suspend fun scanRealHardwareDtcs(): List<DtcCode> = withContext(Dispatchers.IO) {
         if (_connectionState.value != ConnectionState.CONNECTED) {
-            return emptyList()
+            return@withContext emptyList()
         }
-        // Strict rule: Returns only real codes from ECU
-        return listOf()
+        // Temporarily pause polling during DTC bus sweep
+        pollingEngine.stopPolling()
+        val dtcs = dtcScanner.performCompleteDtcScan()
+        // Resume polling
+        startPollingStream()
+        return@withContext dtcs
+    }
+
+    suspend fun clearRealHardwareDtcs(): Result<Boolean> = withContext(Dispatchers.IO) {
+        if (_connectionState.value != ConnectionState.CONNECTED) {
+            return@withContext Result.failure(IllegalStateException("Not connected to ECU"))
+        }
+        pollingEngine.stopPolling()
+        val result = dtcScanner.clearDtcCodes()
+        startPollingStream()
+        return@withContext result
+    }
+
+    fun release() {
+        permissionManager.stopListening()
+        eventListenerJob?.cancel()
+        pollingEngine.stopPolling()
+        telemetryCollectionJob?.cancel()
+        disconnect()
     }
 }

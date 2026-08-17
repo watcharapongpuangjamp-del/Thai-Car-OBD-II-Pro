@@ -206,6 +206,15 @@ fun AiMechanicScreen(
 
                     Spacer(modifier = Modifier.height(14.dp))
 
+                    // Independent Diagnostic Rule Engine Validation Box
+                    aiResult.ruleReport?.let { report ->
+                        com.example.ui.components.DiagnosticAlertComponent(
+                            report = report,
+                            initiallyExpanded = report.anomalies.isNotEmpty()
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                    }
+
                     if (aiResult.possibleRootCausesTh.isNotEmpty()) {
                         Text(
                             text = "สาเหตุที่เป็นไปได้ (Possible Causes):",
