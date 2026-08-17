@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "Thai Car OBD-II Pro",
+  "description": "Professional OBD-II Diagnostic tool with USB OTG hardware support, live telemetry, ECU DTC scanning, and Gemini AI Mechanic.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
