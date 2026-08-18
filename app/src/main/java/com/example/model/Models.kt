@@ -160,6 +160,19 @@ data class AiAnalysisResult(
     val ruleReport: com.example.rules.RuleEngineReport? = null
 )
 
+sealed class DtcScanStatus {
+    object SUCCESS : DtcScanStatus()
+    object NO_CODES : DtcScanStatus()
+    object PARTIAL : DtcScanStatus() // พบแค่บางโมดูล
+    data class FAILED(val reason: String) : DtcScanStatus()
+}
+
+data class DtcScanResult(
+    val codes: List<DtcCode>,
+    val status: DtcScanStatus,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
 data class DiagnosticSession(
     val sessionId: String = "DS-${System.currentTimeMillis() % 1000000}",
     val timestamp: Long = System.currentTimeMillis(),

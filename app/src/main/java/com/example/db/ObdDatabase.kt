@@ -10,6 +10,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "vehicle_profiles")
@@ -143,12 +145,19 @@ abstract class ObdDatabase : RoomDatabase() {
         private var INSTANCE: ObdDatabase? = null
 
         fun getDatabase(context: Context): ObdDatabase {
+            val MIGRATION_1_2 = object : Migration(1, 2) {
+                override fun migrate(database: SupportSQLiteDatabase) {
+                    database.execSQL("CREATE TABLE IF NOT EXISTS `diagnostic_sessions` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `vehicleId` INTEGER NOT NULL, `startTime` INTEGER NOT NULL, `endTime` INTEGER NOT NULL, `modeProvenance` TEXT NOT NULL)")
+                    database.execSQL("CREATE TABLE IF NOT EXISTS `telemetry_history` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `sessionId` INTEGER NOT NULL, `timestamp` INTEGER NOT NULL, `rpm` INTEGER, `speedKmh` INTEGER, `coolantTempC` INTEGER, `batteryVoltage` REAL)")
+                    database.execSQL("CREATE TABLE IF NOT EXISTS `raw_communication_logs` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `sessionId` INTEGER NOT NULL, `timestamp` INTEGER NOT NULL, `direction` TEXT NOT NULL, `rawHexOrText` TEXT NOT NULL, `protocolId` TEXT NOT NULL)")
+                }
+            }
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     ObdDatabase::class.java,
                     "thai_car_obd_db"
-                ).fallbackToDestructiveMigration().build()
+                ).addMigrations(MIGRATION_1_2).build()
                 INSTANCE = instance
                 instance
             }
