@@ -51,6 +51,7 @@ class TelemetryPollingEngine(
             var windowStartTime = System.currentTimeMillis()
             var pidsQueriedInWindow = 0
             var currentPidsPerSec = 0
+            var pollingIntervalMs = 200L
 
             while (isActive) {
                 val cycleStartTime = System.currentTimeMillis()
@@ -76,17 +77,25 @@ class TelemetryPollingEngine(
                     pidsQueriedInWindow += currentData.queriedCount
                     if (System.currentTimeMillis() - windowStartTime >= 1000) {
                         currentPidsPerSec = pidsQueriedInWindow
+                        if (currentPidsPerSec < 8) pollingIntervalMs = maxOf(50L, pollingIntervalMs - 20)
+                        else if (currentPidsPerSec > 12) pollingIntervalMs = minOf(500L, pollingIntervalMs + 20)
                         pidsQueriedInWindow = 0
                         windowStartTime = System.currentTimeMillis()
                     }
+                    
+                    delay(pollingIntervalMs)
+
+                    val activeProtocol = protocolEngine.getActiveProtocol()
+                    val isConnected = activeProtocol.id != "UNKNOWN"
+                    val connectionState = if (isConnected) ConnectionState.CONNECTED else ConnectionState.ECU_NOT_RESPONDING
 
                     _telemetryFlow.value = currentData.sensorData.copy(
-                        isConnected = true,
-                        connectionState = ConnectionState.CONNECTED,
+                        isConnected = isConnected,
+                        connectionState = connectionState,
                         pidPerSec = currentPidsPerSec,
                         latencyMs = cycleDuration.toInt(),
                         mode = AppOperationMode.REAL_HARDWARE,
-                        statusMessage = "กำลังอ่านข้อมูลสดจาก ECU แบบ Adaptive (โปรโตคอล: ${protocolEngine.getActiveProtocol().id})"
+                        statusMessage = if (isConnected) "กำลังอ่านข้อมูลสด (โปรโตคอล: ${activeProtocol.id})" else "รอการเชื่อมต่อ ECU"
                     )
 
                 } catch (e: Exception) {
@@ -214,7 +223,7 @@ class TelemetryPollingEngine(
         try {
             val atrvRaw = elmDriver.sendRawCommand("ATRV", 500)
             voltage = PidDecoder.parseAtRvVoltage(atrvRaw)
-            if (voltage <= 0f) voltage = null
+            if (voltage != null && voltage <= 0f) voltage = null
         } catch (_: Exception) {
             val voltFrame = protocolEngine.readPid(0x42).getOrNull()
             if (voltFrame != null) {

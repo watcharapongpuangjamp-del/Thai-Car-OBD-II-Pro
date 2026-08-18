@@ -36,6 +36,36 @@ data class DtcScanRecordEntity(
     val notes: String = ""
 )
 
+@Entity(tableName = "diagnostic_sessions")
+data class DiagnosticSessionEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val vehicleId: Long,
+    val startTime: Long,
+    val endTime: Long,
+    val modeProvenance: String
+)
+
+@Entity(tableName = "telemetry_history")
+data class TelemetryHistoryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: Long,
+    val timestamp: Long,
+    val rpm: Int?,
+    val speedKmh: Int?,
+    val coolantTempC: Int?,
+    val batteryVoltage: Float?
+)
+
+@Entity(tableName = "raw_communication_logs")
+data class RawCommunicationLogEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: Long,
+    val timestamp: Long,
+    val direction: String,
+    val rawHexOrText: String,
+    val protocolId: String
+)
+
 @Entity(tableName = "maintenance_logs")
 data class MaintenanceLogEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -70,6 +100,18 @@ interface DtcScanDao {
 }
 
 @Dao
+interface DiagnosticSessionDao {
+    @Insert
+    suspend fun insertSession(session: DiagnosticSessionEntity): Long
+    
+    @Insert
+    suspend fun insertTelemetry(telemetry: List<TelemetryHistoryEntity>)
+    
+    @Insert
+    suspend fun insertLogs(logs: List<RawCommunicationLogEntity>)
+}
+
+@Dao
 interface MaintenanceLogDao {
     @Query("SELECT * FROM maintenance_logs WHERE vehicleId = :vehicleId ORDER BY dateTimestamp DESC")
     fun getLogsForVehicle(vehicleId: Long): Flow<List<MaintenanceLogEntity>>
@@ -82,14 +124,18 @@ interface MaintenanceLogDao {
     entities = [
         VehicleProfileEntity::class,
         DtcScanRecordEntity::class,
+        DiagnosticSessionEntity::class,
+        TelemetryHistoryEntity::class,
+        RawCommunicationLogEntity::class,
         MaintenanceLogEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class ObdDatabase : RoomDatabase() {
     abstract fun vehicleProfileDao(): VehicleProfileDao
     abstract fun dtcScanDao(): DtcScanDao
+    abstract fun diagnosticSessionDao(): DiagnosticSessionDao
     abstract fun maintenanceLogDao(): MaintenanceLogDao
 
     companion object {
@@ -102,7 +148,7 @@ abstract class ObdDatabase : RoomDatabase() {
                     context.applicationContext,
                     ObdDatabase::class.java,
                     "thai_car_obd_db"
-                ).build()
+                ).fallbackToDestructiveMigration().build()
                 INSTANCE = instance
                 instance
             }

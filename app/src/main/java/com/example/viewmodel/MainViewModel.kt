@@ -79,20 +79,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Initialize default vehicle profile if database is empty
         viewModelScope.launch {
             repository.allProfiles.collect { profiles ->
-                if (profiles.isEmpty()) {
-                    val defaultProfile = VehicleProfileEntity(
-                        name = "คันโปรด (Primary)",
-                        make = "Toyota",
-                        model = "Hilux Revo 2.8 ROCCO",
-                        year = 2023,
-                        engineType = "2GD-FTV Diesel Turbo",
-                        licensePlate = "1กข 8888 BKK",
-                        odometerKm = 48200,
-                        isDefault = true
-                    )
-                    val id = repository.saveProfile(defaultProfile)
-                    _selectedProfile.value = defaultProfile.copy(id = id)
-                } else if (_selectedProfile.value == null) {
+                if (profiles.isNotEmpty() && _selectedProfile.value == null) {
                     _selectedProfile.value = profiles.first()
                 }
             }

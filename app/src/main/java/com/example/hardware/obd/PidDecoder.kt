@@ -120,12 +120,12 @@ object PidDecoder {
     /**
      * Parses Battery Voltage from ELM327 'ATRV' response (e.g. "12.6V", "13.8V")
      */
-    fun parseAtRvVoltage(raw: String): Float {
+    fun parseAtRvVoltage(raw: String): Float? {
         val clean = raw.replace("V", "", ignoreCase = true)
             .replace(">", "")
             .replace("\r", "")
             .replace("\n", "")
             .trim()
-        return clean.toFloatOrNull() ?: 12.6f
+        return clean.toFloatOrNull()
     }
 }

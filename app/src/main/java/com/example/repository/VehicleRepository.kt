@@ -137,8 +137,9 @@ class VehicleRepository(private val context: Context) {
             "SIMULATED_HISTORY"
         }
 
-        val voltage = currentTelemetry.batteryVoltage ?: 12.6f
+        val voltage = currentTelemetry.batteryVoltage
         val batteryHealth = when {
+            voltage == null -> 0 // Treat missing data as 0 health or handle appropriately
             voltage >= 13.8f -> 95
             voltage >= 12.5f -> 82
             voltage >= 12.0f -> 60
@@ -216,11 +217,7 @@ class VehicleRepository(private val context: Context) {
             3. แนวทางแก้ไขและวิธีซ่อมแซมเบื้องต้น
         """.trimIndent()
 
-        val apiKey = try {
-            BuildConfig::class.java.getField("GEMINI_API_KEY").get(null) as? String ?: ""
-        } catch (e: Exception) {
-            ""
-        }
+        val apiKey = BuildConfig.GEMINI_API_KEY
 
         if (apiKey.isBlank()) {
             val severityLabel = when (ruleReport.overallSeverity) {

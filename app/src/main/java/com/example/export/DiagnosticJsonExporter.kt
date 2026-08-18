@@ -57,6 +57,7 @@ class DiagnosticJsonExporter {
     ): Result<Unit> {
         return try {
             val exportPackage = DiagnosticExportPackage(
+                exportTimestamp = System.currentTimeMillis(),
                 telemetryHistory = telemetryHistory,
                 communicationLogs = communicationLogs,
                 metadata = metadata
