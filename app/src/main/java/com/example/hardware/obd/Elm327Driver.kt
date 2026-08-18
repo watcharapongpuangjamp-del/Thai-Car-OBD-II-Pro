@@ -9,7 +9,7 @@ import kotlinx.coroutines.withContext
 
 class Elm327Driver(
     private val transport: UsbTransport
-) {
+) : IElm327Driver {
 
     companion object {
         private const val TAG = "Elm327Driver"
@@ -28,7 +28,7 @@ class Elm327Driver(
      * 6. ATSP0 (Automatic protocol detection)
      * 7. 0100 (ECU ping and PID discovery)
      */
-    suspend fun performHandshake(): Result<ObdProtocol> = withContext(Dispatchers.IO) {
+    override suspend fun performHandshake(): Result<ObdProtocol> = withContext(Dispatchers.IO) {
         try {
             Log.i(TAG, "Starting ELM327 handshake sequence...")
 
@@ -102,7 +102,7 @@ class Elm327Driver(
         }
     }
 
-    suspend fun queryObd(command: String, timeoutMs: Int = 2000): Result<ObdFrame> = withContext(Dispatchers.IO) {
+    override suspend fun queryObd(command: String, timeoutMs: Int): Result<ObdFrame> = withContext(Dispatchers.IO) {
         try {
             val raw = sendRawCommand(command, timeoutMs)
             val frame = ObdResponseNormalizer.parseFrame(raw, command)
@@ -126,7 +126,7 @@ class Elm327Driver(
         }
     }
 
-    suspend fun sendRawCommand(command: String, timeoutMs: Int = 1500): String = withContext(Dispatchers.IO) {
+    override suspend fun sendRawCommand(command: String, timeoutMs: Int): String = withContext(Dispatchers.IO) {
         if (!transport.isOpen()) {
             throw DiagnosticError.UsbError("ERR_TRANSPORT_CLOSED", "พอร์ต USB ปิดอยู่ ไม่สามารถส่งคำสั่งได้", "Transport is closed")
         }
@@ -167,6 +167,6 @@ class Elm327Driver(
         return@withContext response
     }
 
-    fun getDetectedProtocol(): ObdProtocol = detectedProtocol
-    fun getElmVersion(): String = elmVersion
+    override fun getDetectedProtocol(): ObdProtocol = detectedProtocol
+    override fun getElmVersion(): String = elmVersion
 }

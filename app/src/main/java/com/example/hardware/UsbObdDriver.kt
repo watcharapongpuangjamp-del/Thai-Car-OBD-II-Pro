@@ -17,6 +17,8 @@ import com.example.model.AppOperationMode
 import com.example.model.ConnectionState
 import com.example.model.DiagnosticError
 import com.example.model.DtcCode
+import com.example.model.DtcScanResult
+import com.example.model.DtcScanStatus
 import com.example.model.LiveSensorData
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -256,16 +258,16 @@ class UsbObdDriver(
         }
     }
 
-    suspend fun scanRealHardwareDtcs(): List<DtcCode> = withContext(Dispatchers.IO) {
+    suspend fun scanRealHardwareDtcs(): DtcScanResult = withContext(Dispatchers.IO) {
         if (_connectionState.value != ConnectionState.CONNECTED) {
-            return@withContext emptyList()
+            return@withContext DtcScanResult(emptyList(), DtcScanStatus.FAILED("Not connected"))
         }
         // Temporarily pause polling during DTC bus sweep
         pollingEngine.stopPolling()
-        val dtcs = dtcScanner.performCompleteDtcScan()
+        val dtcResult = dtcScanner.performCompleteDtcScan()
         // Resume polling
         startPollingStream()
-        return@withContext dtcs
+        return@withContext dtcResult
     }
 
     suspend fun clearRealHardwareDtcs(): Result<Boolean> = withContext(Dispatchers.IO) {

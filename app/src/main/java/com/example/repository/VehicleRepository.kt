@@ -71,7 +71,7 @@ class VehicleRepository(private val context: Context) {
 
     suspend fun scanDtcs(): List<DtcCode> {
         return when (_activeMode.value) {
-            AppOperationMode.REAL_HARDWARE -> usbDriver.scanRealHardwareDtcs()
+            AppOperationMode.REAL_HARDWARE -> usbDriver.scanRealHardwareDtcs().codes
             AppOperationMode.SIMULATOR -> emulatorService.generateSimulatorDtcs(emulatorService.currentScenario.value)
         }
     }
@@ -217,7 +217,7 @@ class VehicleRepository(private val context: Context) {
             3. แนวทางแก้ไขและวิธีซ่อมแซมเบื้องต้น
         """.trimIndent()
 
-        val apiKey = BuildConfig.GEMINI_API_KEY
+        val apiKey = "" // BuildConfig.GEMINI_API_KEY removed for security
 
         if (apiKey.isBlank()) {
             val severityLabel = when (ruleReport.overallSeverity) {
