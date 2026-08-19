@@ -8,9 +8,7 @@ on:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v3
 
@@ -19,6 +17,13 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
+
+    - name: Check for Secrets
+      run: |
+        if grep -rnE "AIza[0-9A-Za-z-_]{35}|GEMINI_API_KEY" ./app ; then
+          echo "Error: Hardcoded API keys or secrets found!"
+          exit 1
+        fi
 
     - name: Setup Gradle
       uses: gradle/gradle-build-action@v2

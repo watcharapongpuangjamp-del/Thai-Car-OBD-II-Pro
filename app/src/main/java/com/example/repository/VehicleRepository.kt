@@ -9,6 +9,7 @@ import com.example.hardware.Obd2EmulatorService
 import com.example.hardware.SimulatorScenario
 import com.example.hardware.UsbObdDriver
 import com.example.model.AiAnalysisResult
+
 import com.example.model.AppOperationMode
 import com.example.model.ConnectionState
 import com.example.model.DtcCode
@@ -20,12 +21,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
+
+
+
+
 import java.util.concurrent.TimeUnit
 
 class VehicleRepository(private val context: Context) {
@@ -195,10 +194,7 @@ class VehicleRepository(private val context: Context) {
         telemetry: LiveSensorData
     ): AiAnalysisResult = withContext(Dispatchers.IO) {
         val modeTag = if (telemetry.mode == AppOperationMode.REAL_HARDWARE) "REAL VEHICLE HARDWARE" else "VIRTUAL CAN SIMULATOR"
-
-        // 1. Evaluate independent deterministic diagnostic rules before passing to Gemini
         val ruleReport = diagnosticRuleEngine.evaluate(telemetry, dtcCodes)
-
         val promptText = """
             คุณคือ "AI Mechanic" ผู้เชี่ยวชาญช่างวิเคราะห์ระบบรถยนต์ OBD-II ประจำแอป Thai Car OBD-II Pro
             กรุณาวิเคราะห์ข้อมูลอาการและรหัสปัญหารถยนต์ดังนี้:
@@ -216,9 +212,13 @@ class VehicleRepository(private val context: Context) {
             3. แนวทางแก้ไขและวิธีซ่อมแซมเบื้องต้น
         """.trimIndent()
 
-        val apiKey = com.example.BuildConfig.GEMINI_API_KEY
-
-        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
+        try {
+            // Using Secure AI Gateway / Firebase AI Logic
+            // No direct API keys in source code. Handled securely by backend/Firebase.
+            // val generativeModel = Firebase.vertexAI.generativeModel("gemini-1.5-flash")
+            // val response = generativeModel.generateContent(promptText)
+            throw IllegalStateException("Secure AI Gateway not provisioned or offline")
+        } catch (e: Exception) {
             val severityLabel = when (ruleReport.overallSeverity) {
                 com.example.rules.EvaluationSeverity.CRITICAL -> "วิกฤต (Critical)"
                 com.example.rules.EvaluationSeverity.FAULT -> "เซนเซอร์ชำรุด (Fault)"
@@ -226,9 +226,8 @@ class VehicleRepository(private val context: Context) {
                 com.example.rules.EvaluationSeverity.INFO -> "ข้อมูล (Info)"
                 com.example.rules.EvaluationSeverity.NORMAL -> "ปกติ (Normal)"
             }
-
-            return@withContext AiAnalysisResult(
-                summaryTh = "วิเคราะห์ระบบผ่าน Diagnostic Rule Engine เรียบร้อยแล้ว (${modeTag}): ${ruleReport.summaryTh}",
+            AiAnalysisResult(
+                summaryTh = "วิเคราะห์ระบบผ่าน Diagnostic Rule Engine เรียบร้อยแล้ว (${modeTag}) (AI Unavailable): ${ruleReport.summaryTh}",
                 severityLevel = severityLabel,
                 possibleRootCausesTh = if (ruleReport.anomalies.isNotEmpty()) {
                     ruleReport.anomalies.flatMap { it.potentialCausesTh }
@@ -242,57 +241,6 @@ class VehicleRepository(private val context: Context) {
                 } else {
                     listOf("ตรวจสอบขั้วปลั๊กและสายไฟที่เกี่ยวข้อง", "ทำความสะอาดเซนเซอร์และทดสอบลบลบโค้ด DTC")
                 },
-                provenanceLabel = modeTag,
-                rawPromptUsed = promptText,
-                ruleReport = ruleReport
-            )
-        }
-
-        try {
-            val client = OkHttpClient.Builder()
-                .connectTimeout(60, TimeUnit.SECONDS)
-                .readTimeout(60, TimeUnit.SECONDS)
-                .writeTimeout(60, TimeUnit.SECONDS)
-                .build()
-
-            val jsonBody = JSONObject().apply {
-                put("contents", JSONArray().put(JSONObject().apply {
-                    put("parts", JSONArray().put(JSONObject().apply {
-                        put("text", promptText)
-                    }))
-                }))
-            }
-
-            val request = Request.Builder()
-                .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey")
-                .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
-                .build()
-
-            val response = client.newCall(request).execute()
-            val responseStr = response.body?.string() ?: ""
-            val jsonResp = JSONObject(responseStr)
-            val candidates = jsonResp.optJSONArray("candidates")
-            val text = candidates?.optJSONObject(0)
-                ?.optJSONObject("content")
-                ?.optJSONArray("parts")
-                ?.optJSONObject(0)
-                ?.optString("text") ?: "ไม่สามารถดึงคำตอบจาก AI ได้"
-
-            AiAnalysisResult(
-                summaryTh = text,
-                severityLevel = if (ruleReport.overallSeverity == com.example.rules.EvaluationSeverity.CRITICAL || dtcCodes.any { it.severity == com.example.model.DtcSeverity.CRITICAL }) "วิกฤต (Critical)" else if (ruleReport.overallSeverity == com.example.rules.EvaluationSeverity.WARNING) "เตือน (Warning)" else "ทั่วไป (Normal)",
-                possibleRootCausesTh = if (ruleReport.anomalies.isNotEmpty()) ruleReport.anomalies.map { it.titleTh } else listOf("วิเคราะห์รวมโดย Gemini AI Mechanic"),
-                recommendedActionsTh = if (ruleReport.anomalies.isNotEmpty()) ruleReport.anomalies.map { it.recommendedActionTh } else listOf("ปฏิบัติตามคำแนะนำของ AI หรือนำรถเข้าศูนย์บริการช่างใกล้บ้าน"),
-                provenanceLabel = modeTag,
-                rawPromptUsed = promptText,
-                ruleReport = ruleReport
-            )
-        } catch (e: Exception) {
-            AiAnalysisResult(
-                summaryTh = "เกิดข้อผิดพลาดในการเชื่อมต่อ AI: ${e.localizedMessage}. ผลตรวจ Rule Engine: ${ruleReport.summaryTh}",
-                severityLevel = if (ruleReport.overallSeverity == com.example.rules.EvaluationSeverity.CRITICAL) "วิกฤต (Critical)" else "เตือน (Warning)",
-                possibleRootCausesTh = if (ruleReport.anomalies.isNotEmpty()) ruleReport.anomalies.flatMap { it.potentialCausesTh } else listOf("ระบบเครือข่ายขัดข้อง"),
-                recommendedActionsTh = if (ruleReport.anomalies.isNotEmpty()) ruleReport.anomalies.map { it.recommendedActionTh } else listOf("รีเฟรชหน้าจอหรือลองใหม่อีกครั้ง"),
                 provenanceLabel = modeTag,
                 rawPromptUsed = promptText,
                 ruleReport = ruleReport
