@@ -191,6 +191,19 @@ sealed class DtcScanStatus {
     data class FAILED(val reason: String) : DtcScanStatus()
 }
 
+
+enum class DiagnosticState {
+    NOT_TESTED, USB_CONNECTED, ELM327_HANDSHAKE, PROTOCOL_READY, 
+    ECU_RESPONDING, DTC_REQUEST_SUCCESS, DTC_RESULT_VALID, 
+    COMMUNICATION_ERROR, TIMEOUT
+}
+
+data class ObdFrame(
+    val tx: String,
+    val rx: String,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
 data class DtcScanResult(
     val codes: List<DtcCode>,
     val status: DtcScanStatus,
