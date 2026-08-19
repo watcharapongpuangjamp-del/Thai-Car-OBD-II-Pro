@@ -11,15 +11,27 @@ enum class DataProvenance {
     USER_ENTERED,
     HISTORICAL,
     ESTIMATED,
-    AI_INFERRED
+    AI_INFERRED,
+    UNKNOWN
+}
+
+enum class SensorQuality {
+    GOOD,
+    STALE,
+    ERROR,
+    UNKNOWN
 }
 
 data class TelemetryValue<T>(
     val value: T?,
     val unit: String,
     val provenance: DataProvenance,
+    val quality: SensorQuality = SensorQuality.UNKNOWN,
     val timestamp: Long = System.currentTimeMillis()
-)
+) {
+    val isStale: Boolean
+        get() = (System.currentTimeMillis() - timestamp) > 2500L
+}
 
 enum class ConnectionState(val labelTh: String, val labelEn: String, val isError: Boolean = false) {
     // Normal connection progression sequence
@@ -61,33 +73,38 @@ sealed class UsbConnectionState {
 data class LiveSensorData(
     val isConnected: Boolean,
     val connectionState: ConnectionState,
-    val rpm: Int?,
-    val speedKmh: Int?,
-    val coolantTempC: Int?,
-    val batteryVoltage: Float?,
-    val boostPressureBar: Float?,
-    val fuelRateLph: Float?,
-    val throttlePosPercent: Int?,
-    val intakeTempC: Int?,
-    val engineLoadPercent: Int?,
+    
+    val rpmData: TelemetryValue<Int> = TelemetryValue(null, "RPM", DataProvenance.UNKNOWN),
+    val speedData: TelemetryValue<Int> = TelemetryValue(null, "km/h", DataProvenance.UNKNOWN),
+    val coolantData: TelemetryValue<Int> = TelemetryValue(null, "°C", DataProvenance.UNKNOWN),
+    val voltageData: TelemetryValue<Float> = TelemetryValue(null, "V", DataProvenance.UNKNOWN),
+    val mapData: TelemetryValue<Int> = TelemetryValue(null, "kPa", DataProvenance.UNKNOWN),
+    val boostData: TelemetryValue<Float> = TelemetryValue(null, "Bar", DataProvenance.UNKNOWN),
+    val fuelRateData: TelemetryValue<Float> = TelemetryValue(null, "L/h", DataProvenance.UNKNOWN),
+    val throttleData: TelemetryValue<Int> = TelemetryValue(null, "%", DataProvenance.UNKNOWN),
+    val intakeTempData: TelemetryValue<Int> = TelemetryValue(null, "°C", DataProvenance.UNKNOWN),
+    val engineLoadData: TelemetryValue<Int> = TelemetryValue(null, "%", DataProvenance.UNKNOWN),
+
     val pidPerSec: Int,
     val latencyMs: Int,
     val mode: AppOperationMode,
     val statusMessage: String = ""
 ) {
+    val rpm: Int? get() = rpmData.value
+    val speedKmh: Int? get() = speedData.value
+    val coolantTempC: Int? get() = coolantData.value
+    val batteryVoltage: Float? get() = voltageData.value
+    val mapPressureKpa: Int? get() = mapData.value
+    val boostPressureBar: Float? get() = boostData.value
+    val fuelRateLph: Float? get() = fuelRateData.value
+    val throttlePosPercent: Int? get() = throttleData.value
+    val intakeTempC: Int? get() = intakeTempData.value
+    val engineLoadPercent: Int? get() = engineLoadData.value
+
     companion object {
         fun disconnected(mode: AppOperationMode, message: String = "ยังไม่ได้เชื่อมต่ออุปกรณ์") = LiveSensorData(
             isConnected = false,
             connectionState = ConnectionState.DISCONNECTED,
-            rpm = null,
-            speedKmh = null,
-            coolantTempC = null,
-            batteryVoltage = null,
-            boostPressureBar = null,
-            fuelRateLph = null,
-            throttlePosPercent = null,
-            intakeTempC = null,
-            engineLoadPercent = null,
             pidPerSec = 0,
             latencyMs = 0,
             mode = mode,
@@ -99,6 +116,7 @@ data class LiveSensorData(
             speed: Int,
             coolant: Int,
             voltage: Float,
+            map: Int,
             boost: Float,
             fuelRate: Float,
             throttle: Int,
@@ -107,15 +125,16 @@ data class LiveSensorData(
         ) = LiveSensorData(
             isConnected = true,
             connectionState = ConnectionState.CONNECTED,
-            rpm = rpm,
-            speedKmh = speed,
-            coolantTempC = coolant,
-            batteryVoltage = voltage,
-            boostPressureBar = boost,
-            fuelRateLph = fuelRate,
-            throttlePosPercent = throttle,
-            intakeTempC = intakeTemp,
-            engineLoadPercent = load,
+            rpmData = TelemetryValue(rpm, "RPM", DataProvenance.SIMULATOR),
+            speedData = TelemetryValue(speed, "km/h", DataProvenance.SIMULATOR),
+            coolantData = TelemetryValue(coolant, "°C", DataProvenance.SIMULATOR),
+            voltageData = TelemetryValue(voltage, "V", DataProvenance.SIMULATOR),
+            mapData = TelemetryValue(map, "kPa", DataProvenance.SIMULATOR),
+            boostData = TelemetryValue(boost, "Bar", DataProvenance.SIMULATOR),
+            fuelRateData = TelemetryValue(fuelRate, "L/h", DataProvenance.SIMULATOR),
+            throttleData = TelemetryValue(throttle, "%", DataProvenance.SIMULATOR),
+            intakeTempData = TelemetryValue(intakeTemp, "°C", DataProvenance.SIMULATOR),
+            engineLoadData = TelemetryValue(load, "%", DataProvenance.SIMULATOR),
             pidPerSec = 32,
             latencyMs = 15,
             mode = AppOperationMode.SIMULATOR,
@@ -192,3 +211,12 @@ data class DiagnosticSession(
     val mode: AppOperationMode = AppOperationMode.REAL_HARDWARE
 )
 
+
+data class ValidatedDiagnosticSnapshot(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val timestamp: Long = System.currentTimeMillis(),
+    val isRealHardware: Boolean,
+    val liveData: LiveSensorData?,
+    val dtcResult: DtcScanResult?,
+    val rawEvidence: List<com.example.hardware.obd.ObdFrame> = emptyList()
+)

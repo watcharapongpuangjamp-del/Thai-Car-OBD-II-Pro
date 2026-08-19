@@ -30,6 +30,7 @@ class Obd2EmulatorService {
             speed = 0,
             coolant = 86,
             voltage = 14.1f,
+            map = 101,
             boost = 0.02f,
             fuelRate = 1.1f,
             throttle = 12,
@@ -52,6 +53,7 @@ class Obd2EmulatorService {
                     speed = 0,
                     coolant = 88,
                     voltage = 14.2f,
+                    map = 101,
                     boost = 0.03f,
                     fuelRate = 1.1f,
                     throttle = 12,
@@ -65,6 +67,7 @@ class Obd2EmulatorService {
                     speed = 85 + Random.nextInt(-3, 3),
                     coolant = 90,
                     voltage = 13.9f,
+                    map = 140,
                     boost = 0.45f,
                     fuelRate = 6.4f,
                     throttle = 38,
@@ -78,6 +81,7 @@ class Obd2EmulatorService {
                     speed = 124 + Random.nextInt(-5, 5),
                     coolant = 95,
                     voltage = 13.8f,
+                    map = 280,
                     boost = 1.85f,
                     fuelRate = 14.2f,
                     throttle = 85,
@@ -91,6 +95,7 @@ class Obd2EmulatorService {
                     speed = 90,
                     coolant = 112, // Danger High
                     voltage = 13.5f,
+                    map = 160,
                     boost = 0.60f,
                     fuelRate = 8.5f,
                     throttle = 45,
@@ -100,78 +105,41 @@ class Obd2EmulatorService {
             }
             SimulatorScenario.SENSOR_FAULT -> {
                 _simulatedTelemetry.value = LiveSensorData.simulated(
-                    rpm = 1850 + Random.nextInt(-80, 80),
-                    speed = 60,
-                    coolant = 104,
-                    voltage = 12.1f, // Low Battery / Alternator issue
+                    rpm = 1850 + Random.nextInt(-30, 30),
+                    speed = 65,
+                    coolant = 92,
+                    voltage = 14.0f,
+                    map = 120,
                     boost = 0.20f,
-                    fuelRate = 9.8f,
-                    throttle = 30,
+                    fuelRate = 4.8f,
+                    throttle = 25,
                     intakeTemp = 42,
-                    load = 58
+                    load = 32
                 )
             }
         }
     }
 
-    suspend fun generateSimulatorDtcs(scenario: SimulatorScenario): List<DtcCode> {
-        delay(600) // Simulate ECU scan delay
-        return when (scenario) {
-            SimulatorScenario.IDLE, SimulatorScenario.CRUISE -> listOf()
-            SimulatorScenario.HIGH_BOOST -> listOf(
-                DtcCode(
-                    code = "P0234",
-                    module = "ECM (กล่องควบคุมเครื่องยนต์)",
-                    descriptionEn = "Turbocharger/Supercharger Overboost Condition",
-                    descriptionTh = "แรงดันเทอร์โบชาร์จเจอร์เกินค่ามาตรฐาน (Overboost)",
-                    severity = DtcSeverity.WARNING,
-                    modeProvenance = AppOperationMode.SIMULATOR
-                )
-            )
-            SimulatorScenario.OVERHEAT_WARNING -> listOf(
-                DtcCode(
-                    code = "P0217",
-                    module = "ECM (กล่องควบคุมเครื่องยนต์)",
-                    descriptionEn = "Engine Coolant Over Temperature Condition",
-                    descriptionTh = "อุณหภูมิความร้อนน้ำ cooling เครื่องยนต์สูงเกินระดับปลอดภัย",
-                    severity = DtcSeverity.CRITICAL,
-                    modeProvenance = AppOperationMode.SIMULATOR
-                ),
-                DtcCode(
-                    code = "P1256",
-                    module = "ECM (กล่องควบคุมเครื่องยนต์)",
-                    descriptionEn = "Coolant Temperature Sensor Signal Circuit Fault",
-                    descriptionTh = "สัญญาณวงจรเซนเซอร์อุณหภูมิน้ำขัดข้อง",
-                    severity = DtcSeverity.WARNING,
-                    modeProvenance = AppOperationMode.SIMULATOR
-                )
-            )
-            SimulatorScenario.SENSOR_FAULT -> listOf(
-                DtcCode(
-                    code = "P0171",
-                    module = "ECM (กล่องควบคุมเครื่องยนต์)",
-                    descriptionEn = "System Too Lean (Bank 1)",
-                    descriptionTh = "ส่วนผสมไอดีบางเกินไป (System Too Lean)",
-                    severity = DtcSeverity.WARNING,
-                    modeProvenance = AppOperationMode.SIMULATOR
-                ),
-                DtcCode(
-                    code = "C0035",
-                    module = "ABS / ESC (ระบบเบรกกันล็อก)",
-                    descriptionEn = "Left Front Wheel Speed Sensor Circuit Fault",
-                    descriptionTh = "วงจรเซนเซอร์ความเร็วล้อหน้าซ้ายขัดข้อง",
-                    severity = DtcSeverity.WARNING,
-                    modeProvenance = AppOperationMode.SIMULATOR
-                ),
-                DtcCode(
-                    code = "P0741",
-                    module = "TCM (เกียร์อัตโนมัติ)",
-                    descriptionEn = "Torque Converter Clutch Circuit Performance or Stuck Off",
-                    descriptionTh = "ระบบทอร์กคอนเวอร์เตอร์คลัตช์ลื่นหรือค้างเปิด",
-                    severity = DtcSeverity.CRITICAL,
-                    modeProvenance = AppOperationMode.SIMULATOR
-                )
+    suspend fun runSimulatorLoop() {
+        while (true) {
+            updateTelemetryForScenario(_currentScenario.value)
+            delay(100) // 10Hz
+        }
+    }
+
+    suspend fun performSimulatedDtcScan(): List<DtcCode> {
+        delay(2000) // Simulate network/ECU wait
+        if (_currentScenario.value == SimulatorScenario.SENSOR_FAULT) {
+            return listOf(
+                DtcCode("P0171", "ECM", "System Too Lean (Bank 1)", "ส่วนผสมเชื้อเพลิงบางเกินไป", DtcSeverity.WARNING, AppOperationMode.SIMULATOR),
+                DtcCode("P0087", "ECM", "Fuel Rail/System Pressure - Too Low", "แรงดันในรางหัวฉีดต่ำเกินไป", DtcSeverity.CRITICAL, AppOperationMode.SIMULATOR)
             )
         }
+        if (_currentScenario.value == SimulatorScenario.OVERHEAT_WARNING) {
+             return listOf(
+                DtcCode("P0217", "ECM", "Engine Coolant Over Temperature Condition", "อุณหภูมิน้ำหล่อเย็นสูงเกินกำหนด", DtcSeverity.CRITICAL, AppOperationMode.SIMULATOR)
+            )
+        }
+        return emptyList()
     }
 }

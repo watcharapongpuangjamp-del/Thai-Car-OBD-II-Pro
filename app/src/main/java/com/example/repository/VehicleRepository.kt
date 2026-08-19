@@ -1,7 +1,6 @@
 package com.example.repository
 
 import android.content.Context
-import com.example.BuildConfig
 import com.example.db.DtcScanRecordEntity
 import com.example.db.MaintenanceLogEntity
 import com.example.db.ObdDatabase
@@ -72,7 +71,7 @@ class VehicleRepository(private val context: Context) {
     suspend fun scanDtcs(): List<DtcCode> {
         return when (_activeMode.value) {
             AppOperationMode.REAL_HARDWARE -> usbDriver.scanRealHardwareDtcs().codes
-            AppOperationMode.SIMULATOR -> emulatorService.generateSimulatorDtcs(emulatorService.currentScenario.value)
+            AppOperationMode.SIMULATOR -> emulatorService.performSimulatedDtcScan()
         }
     }
 

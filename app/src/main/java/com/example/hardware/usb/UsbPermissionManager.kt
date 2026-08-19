@@ -87,7 +87,12 @@ class UsbPermissionManager(private val context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
             } else {
-                context.registerReceiver(usbReceiver, filter)
+                androidx.core.content.ContextCompat.registerReceiver(
+                    context, 
+                    usbReceiver, 
+                    filter, 
+                    androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+                )
             }
             isReceiverRegistered = true
             scanForAttachedDevices()

@@ -15,7 +15,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material.icons.filled.Info
 import com.example.ui.screens.*
+import com.example.ui.screens.developer.DeveloperStoryScreen
 import com.example.ui.theme.CyanPrimary
 import com.example.ui.theme.DarkBackground
 import com.example.ui.theme.PurpleGlow
@@ -32,6 +34,7 @@ sealed class Screen(val route: String, val titleTh: String, val icon: ImageVecto
     object AiMechanic : Screen("ai_mechanic", "AI ช่างยนต์", Icons.Default.AutoAwesome)
     object Predictive : Screen("predictive", "คาดการณ์", Icons.Default.HourglassTop)
     object Profile : Screen("profile", "ข้อมูลรถ", Icons.Default.DirectionsCar)
+    object DeveloperStory : Screen("developer_story", "เรื่องราวนักพัฒนา", Icons.Default.Info)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -72,6 +75,11 @@ fun ThaiObdApp(viewModel: MainViewModel) {
                             fontSize = 11.sp,
                             color = CyanPrimary
                         )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { currentScreen = Screen.DeveloperStory }) {
+                        Icon(Icons.Default.Info, contentDescription = "Developer Story", tint = CyanPrimary)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = DarkBackground)
@@ -172,6 +180,9 @@ fun ThaiObdApp(viewModel: MainViewModel) {
                     onAddMaintenanceLog = { title, cost, mileage, category ->
                         viewModel.addMaintenanceLog(title, cost, mileage, category)
                     }
+                )
+                Screen.DeveloperStory -> DeveloperStoryScreen(
+                    onNavigateBack = { currentScreen = Screen.Dashboard }
                 )
             }
         }

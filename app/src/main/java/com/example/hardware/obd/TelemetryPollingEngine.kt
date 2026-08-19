@@ -5,6 +5,8 @@ import com.example.model.AppOperationMode
 import com.example.model.ConnectionState
 import com.example.model.DataProvenance
 import com.example.model.LiveSensorData
+import com.example.model.TelemetryValue
+import com.example.model.SensorQuality
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,37 +44,43 @@ class TelemetryPollingEngine(
     private var lastSuccessfulPacketTimestamp = System.currentTimeMillis()
 
     // Cached sensor values across adaptive cycles
-    private var cachedRpm: Int? = null
-    private var cachedSpeed: Int? = null
-    private var cachedThrottle: Int? = null
-    private var cachedCoolant: Int? = null
-    private var cachedBoost: Float? = null
-    private var cachedLoad: Int? = null
-    private var cachedIat: Int? = null
-    private var cachedFuelRate: Float? = null
-    private var cachedVoltage: Float? = null
+    private var cachedRpm: TelemetryValue<Int>? = null
+    private var cachedSpeed: TelemetryValue<Int>? = null
+    private var cachedThrottle: TelemetryValue<Int>? = null
+    private var cachedCoolant: TelemetryValue<Int>? = null
+    private var cachedMap: TelemetryValue<Int>? = null
+    private var cachedBoost: TelemetryValue<Float>? = null
+    private var cachedLoad: TelemetryValue<Int>? = null
+    private var cachedIat: TelemetryValue<Int>? = null
+    private var cachedFuelRate: TelemetryValue<Float>? = null
+    private var cachedVoltage: TelemetryValue<Float>? = null
 
-    private var cycleCounter = 0
+    private var lastFastPoll = 0L
+    private var lastMedPoll = 0L
+    private var lastSlowPoll = 0L
 
     fun startPolling() {
         stopPolling()
         consecutiveErrors = 0
+        totalRequests = 0
+        successRequests = 0
+        timeoutRequests = 0
+        unsupportedRequests = 0
         lastSuccessfulPacketTimestamp = System.currentTimeMillis()
-        cycleCounter = 0
-        Log.i(TAG, "Starting Adaptive Real Hardware OBD Telemetry Polling (FAST ~5Hz, MEDIUM ~2Hz, SLOW ~1Hz)...")
+
+        Log.i(TAG, "Starting Adaptive Real Hardware OBD Telemetry Polling (Time-based: FAST ~5Hz, MEDIUM ~2Hz, SLOW ~1Hz)...")
 
         pollingJob = pollingScope.launch {
             var windowStartTime = System.currentTimeMillis()
             var pidsQueriedInWindow = 0
             var currentPidsPerSec = 0
-            var pollingIntervalMs = 200L
+            var pollingIntervalMs = 50L
 
             while (isActive) {
                 val cycleStartTime = System.currentTimeMillis()
-                cycleCounter++
 
                 try {
-                    val pollResult = pollAdaptiveSensorsBySchedule(cycleCounter)
+                    val pollResult = pollAdaptiveSensorsTimeBased()
                     val cycleDuration = System.currentTimeMillis() - cycleStartTime
                     
                     val idleDuration = System.currentTimeMillis() - lastSuccessfulPacketTimestamp
@@ -134,38 +142,48 @@ class TelemetryPollingEngine(
         val queriedCount: Int
     )
 
-    private suspend fun pollAdaptiveSensorsBySchedule(cycle: Int): AdaptivePollResult = withContext(Dispatchers.IO) {
+    private suspend fun pollAdaptiveSensorsTimeBased(): AdaptivePollResult = withContext(Dispatchers.IO) {
         var queriedCount = 0
+        val now = System.currentTimeMillis()
 
-        // 1. FAST PIDs (~5Hz / Every cycle): RPM (0x0C), Speed (0x0D)
-        totalRequests++
-        queriedCount++
-        val rpmFrame = protocolEngine.readPid(0x0C)
-        if (rpmFrame.isSuccess) {
-            successRequests++
-            cachedRpm = PidDecoder.decodeRpm(rpmFrame.getOrThrow().data)
-        } else {
-            timeoutRequests++
+        // 1. FAST PIDs (~5Hz -> every 200ms)
+        if (now - lastFastPoll >= 200) {
+            lastFastPoll = now
+            
+            totalRequests++
+            queriedCount++
+            val rpmFrame = protocolEngine.readPid(0x0C)
+            if (rpmFrame.isSuccess) {
+                successRequests++
+                val value = PidDecoder.decodeRpm(rpmFrame.getOrThrow().data)
+                cachedRpm = TelemetryValue(value, "RPM", DataProvenance.REAL_HARDWARE, SensorQuality.GOOD)
+            } else {
+                timeoutRequests++
+            }
+
+            totalRequests++
+            queriedCount++
+            val speedFrame = protocolEngine.readPid(0x0D)
+            if (speedFrame.isSuccess) {
+                successRequests++
+                val value = PidDecoder.decodeSpeed(speedFrame.getOrThrow().data)
+                cachedSpeed = TelemetryValue(value, "km/h", DataProvenance.REAL_HARDWARE, SensorQuality.GOOD)
+            } else {
+                timeoutRequests++
+            }
         }
 
-        totalRequests++
-        queriedCount++
-        val speedFrame = protocolEngine.readPid(0x0D)
-        if (speedFrame.isSuccess) {
-            successRequests++
-            cachedSpeed = PidDecoder.decodeSpeed(speedFrame.getOrThrow().data)
-        } else {
-            timeoutRequests++
-        }
-
-        // 2. MEDIUM PIDs (~2Hz / Every 2 cycles): Coolant (0x05), Throttle (0x11), Engine Load (0x04)
-        if (cycle % 2 == 0) {
+        // 2. MEDIUM PIDs (~2Hz -> every 500ms)
+        if (now - lastMedPoll >= 500) {
+            lastMedPoll = now
+            
             totalRequests++
             queriedCount++
             val ectFrame = protocolEngine.readPid(0x05)
             if (ectFrame.isSuccess) {
                 successRequests++
-                cachedCoolant = PidDecoder.decodeCoolantTemp(ectFrame.getOrThrow().data)
+                val value = PidDecoder.decodeCoolantTemp(ectFrame.getOrThrow().data)
+                cachedCoolant = TelemetryValue(value, "°C", DataProvenance.REAL_HARDWARE, SensorQuality.GOOD)
             } else {
                 timeoutRequests++
             }
@@ -175,7 +193,8 @@ class TelemetryPollingEngine(
             val throttleFrame = protocolEngine.readPid(0x11)
             if (throttleFrame.isSuccess) {
                 successRequests++
-                cachedThrottle = PidDecoder.decodeThrottlePosition(throttleFrame.getOrThrow().data)
+                val value = PidDecoder.decodeThrottlePosition(throttleFrame.getOrThrow().data)
+                cachedThrottle = TelemetryValue(value, "%", DataProvenance.REAL_HARDWARE, SensorQuality.GOOD)
             } else {
                 timeoutRequests++
             }
@@ -185,20 +204,24 @@ class TelemetryPollingEngine(
             val loadFrame = protocolEngine.readPid(0x04)
             if (loadFrame.isSuccess) {
                 successRequests++
-                cachedLoad = PidDecoder.decodeEngineLoad(loadFrame.getOrThrow().data)
+                val value = PidDecoder.decodeEngineLoad(loadFrame.getOrThrow().data)
+                cachedLoad = TelemetryValue(value, "%", DataProvenance.REAL_HARDWARE, SensorQuality.GOOD)
             } else {
                 timeoutRequests++
             }
         }
 
-        // 3. SLOW PIDs (~1Hz / Every 5 cycles): Intake Temp (0x0F), MAF (0x10), Boost/MAP (0x0B), Voltage (ATRV)
-        if (cycle % 5 == 0) {
+        // 3. SLOW PIDs (~1Hz -> every 1000ms)
+        if (now - lastSlowPoll >= 1000) {
+            lastSlowPoll = now
+            
             totalRequests++
             queriedCount++
             val iatFrame = protocolEngine.readPid(0x0F)
             if (iatFrame.isSuccess) {
                 successRequests++
-                cachedIat = PidDecoder.decodeIntakeAirTemp(iatFrame.getOrThrow().data)
+                val value = PidDecoder.decodeIntakeAirTemp(iatFrame.getOrThrow().data)
+                cachedIat = TelemetryValue(value, "°C", DataProvenance.REAL_HARDWARE, SensorQuality.GOOD)
             } else {
                 timeoutRequests++
             }
@@ -209,7 +232,9 @@ class TelemetryPollingEngine(
             if (mafFrame.isSuccess) {
                 successRequests++
                 val mafGps = PidDecoder.decodeMafAirFlow(mafFrame.getOrThrow().data)
-                cachedFuelRate = PidDecoder.estimateFuelRateLph(mafGps, cachedSpeed ?: 0)
+                val speed = cachedSpeed?.value ?: 0
+                val fuel = PidDecoder.estimateFuelRateLph(mafGps, speed)
+                cachedFuelRate = TelemetryValue(fuel, "L/h", DataProvenance.REAL_HARDWARE, SensorQuality.GOOD)
             } else {
                 timeoutRequests++
             }
@@ -219,7 +244,11 @@ class TelemetryPollingEngine(
             val mapFrame = protocolEngine.readPid(0x0B)
             if (mapFrame.isSuccess) {
                 successRequests++
-                cachedBoost = PidDecoder.decodeBoostPressureBar(mapFrame.getOrThrow().data)
+                val data = mapFrame.getOrThrow().data
+                val mapVal = PidDecoder.decodeMapPressureKpa(data)
+                val boostVal = PidDecoder.decodeBoostPressureBar(data)
+                cachedMap = TelemetryValue(mapVal, "kPa", DataProvenance.REAL_HARDWARE, SensorQuality.GOOD)
+                cachedBoost = TelemetryValue(boostVal, "Bar", DataProvenance.REAL_HARDWARE, SensorQuality.GOOD)
             } else {
                 timeoutRequests++
             }
@@ -228,7 +257,7 @@ class TelemetryPollingEngine(
                 val atrvRaw = elmDriver.sendRawCommand("ATRV", 400)
                 val volt = PidDecoder.parseAtRvVoltage(atrvRaw)
                 if (volt != null && volt > 0f) {
-                    cachedVoltage = volt
+                    cachedVoltage = TelemetryValue(volt, "V", DataProvenance.REAL_HARDWARE, SensorQuality.GOOD)
                 }
             } catch (_: Exception) {}
         }
@@ -236,19 +265,20 @@ class TelemetryPollingEngine(
         val sensorData = LiveSensorData(
             isConnected = true,
             connectionState = ConnectionState.CONNECTED,
-            rpm = cachedRpm,
-            speedKmh = cachedSpeed,
-            coolantTempC = cachedCoolant,
-            batteryVoltage = cachedVoltage,
-            boostPressureBar = cachedBoost,
-            fuelRateLph = cachedFuelRate,
-            throttlePosPercent = cachedThrottle,
-            intakeTempC = cachedIat,
-            engineLoadPercent = cachedLoad,
+            rpmData = cachedRpm ?: TelemetryValue(null, "RPM", DataProvenance.REAL_HARDWARE),
+            speedData = cachedSpeed ?: TelemetryValue(null, "km/h", DataProvenance.REAL_HARDWARE),
+            coolantData = cachedCoolant ?: TelemetryValue(null, "°C", DataProvenance.REAL_HARDWARE),
+            voltageData = cachedVoltage ?: TelemetryValue(null, "V", DataProvenance.REAL_HARDWARE),
+            mapData = cachedMap ?: TelemetryValue(null, "kPa", DataProvenance.REAL_HARDWARE),
+            boostData = cachedBoost ?: TelemetryValue(null, "Bar", DataProvenance.REAL_HARDWARE),
+            fuelRateData = cachedFuelRate ?: TelemetryValue(null, "L/h", DataProvenance.REAL_HARDWARE),
+            throttleData = cachedThrottle ?: TelemetryValue(null, "%", DataProvenance.REAL_HARDWARE),
+            intakeTempData = cachedIat ?: TelemetryValue(null, "°C", DataProvenance.REAL_HARDWARE),
+            engineLoadData = cachedLoad ?: TelemetryValue(null, "%", DataProvenance.REAL_HARDWARE),
             pidPerSec = 0,
             latencyMs = 0,
             mode = AppOperationMode.REAL_HARDWARE,
-            statusMessage = "Adaptive Polling Active (FAST/MED/SLOW separated)"
+            statusMessage = "Adaptive Polling Active (FAST/MED/SLOW Time-Based)"
         )
 
         return@withContext AdaptivePollResult(sensorData, queriedCount)
@@ -261,5 +291,3 @@ class TelemetryPollingEngine(
 
     fun setPollingInterval(intervalMs: Long) {}
 }
-
-

@@ -109,14 +109,7 @@ class RealDtcScanner(
     }
 
     private fun resolveModuleFromHeader(header: String): String {
-        return when (header.uppercase()) {
-            "7E8" -> "ECM"
-            "7E9" -> "TCM"
-            "7EA" -> "ABS"
-            "7EB" -> "SRS"
-            "7EC" -> "BCM"
-            else -> "UNKNOWN_ECU"
-        }
+        return "ECU_${header.uppercase()}"
     }
 
     private fun computeRequestHeader(responseHeader: String): String {
@@ -163,4 +156,3 @@ class RealDtcScanner(
         }
     }
 }
-
