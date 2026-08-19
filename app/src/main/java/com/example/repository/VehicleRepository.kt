@@ -1,6 +1,8 @@
 package com.example.repository
 
 import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
 import com.example.db.DtcScanRecordEntity
 import com.example.db.MaintenanceLogEntity
 import com.example.db.ObdDatabase
