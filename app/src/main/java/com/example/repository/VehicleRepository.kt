@@ -216,9 +216,9 @@ class VehicleRepository(private val context: Context) {
             3. แนวทางแก้ไขและวิธีซ่อมแซมเบื้องต้น
         """.trimIndent()
 
-        val apiKey = "" // BuildConfig.GEMINI_API_KEY removed for security
+        val apiKey = com.example.BuildConfig.GEMINI_API_KEY
 
-        if (apiKey.isBlank()) {
+        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
             val severityLabel = when (ruleReport.overallSeverity) {
                 com.example.rules.EvaluationSeverity.CRITICAL -> "วิกฤต (Critical)"
                 com.example.rules.EvaluationSeverity.FAULT -> "เซนเซอร์ชำรุด (Fault)"
