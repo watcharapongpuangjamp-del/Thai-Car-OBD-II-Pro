@@ -149,12 +149,17 @@ enum class DtcSeverity(val labelTh: String, val colorHex: String) {
     INFO("ข้อมูล - บันทึกประวัติ", "#1E88E5")
 }
 
+enum class DtcStatus {
+    CONFIRMED, PENDING, PERMANENT, UNKNOWN
+}
+
 data class DtcCode(
     val code: String,
     val module: String, // ECM, TCM, ABS, SRS, BCM
     val descriptionEn: String,
     val descriptionTh: String,
     val severity: DtcSeverity,
+    val status: DtcStatus = DtcStatus.UNKNOWN,
     val modeProvenance: AppOperationMode,
     val timestamp: Long = System.currentTimeMillis()
 )
@@ -196,7 +201,7 @@ data class DiagnosticSession(
     val sessionId: String = "DS-${System.currentTimeMillis() % 1000000}",
     val timestamp: Long = System.currentTimeMillis(),
     val vehicleName: String = "รถยนต์ทดสอบ",
-    val vehicleMake: String = "Toyota",
+    val vehicleMake: String = "Generic",
     val vehicleModel: String = "Hilux Revo",
     val vehicleYear: Int = 2022,
     val vehicleVin: String = "MHFAB22G0K1234567",

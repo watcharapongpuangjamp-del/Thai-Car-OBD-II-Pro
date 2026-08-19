@@ -3,6 +3,7 @@ package com.example.hardware.obd
 import com.example.model.AppOperationMode
 import com.example.model.DtcCode
 import com.example.model.DtcSeverity
+import com.example.model.DtcStatus
 import java.util.Locale
 
 object DtcDecoder {
@@ -27,7 +28,8 @@ object DtcDecoder {
     fun decodeDtcResponse(
         rawResponse: String,
         defaultModule: String = "ECM",
-        modeProvenance: AppOperationMode = AppOperationMode.REAL_HARDWARE
+        modeProvenance: AppOperationMode = AppOperationMode.REAL_HARDWARE,
+        status: DtcStatus = DtcStatus.UNKNOWN
     ): List<DtcCode> {
         val normalized = ObdResponseNormalizer.normalize(rawResponse)
         if (normalized.isEmpty() ||
@@ -84,7 +86,7 @@ object DtcDecoder {
 
             val formattedCode = formatDtcCode(b1, b2)
             if (formattedCode.isNotBlank()) {
-                val metadata = lookupDtcMetadata(formattedCode, defaultModule, modeProvenance)
+                val metadata = lookupDtcMetadata(formattedCode, defaultModule, modeProvenance, status)
                 resultList.add(metadata)
             }
         }
@@ -111,7 +113,8 @@ object DtcDecoder {
     fun lookupDtcMetadata(
         code: String,
         module: String = "ECM",
-        modeProvenance: AppOperationMode = AppOperationMode.REAL_HARDWARE
+        modeProvenance: AppOperationMode = AppOperationMode.REAL_HARDWARE,
+        status: DtcStatus = DtcStatus.UNKNOWN
     ): DtcCode {
         val upper = code.uppercase(Locale.ROOT).trim()
         return when (upper) {

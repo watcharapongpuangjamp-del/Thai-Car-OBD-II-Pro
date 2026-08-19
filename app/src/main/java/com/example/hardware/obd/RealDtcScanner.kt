@@ -4,6 +4,7 @@ import android.util.Log
 import com.example.model.DtcCode
 import com.example.model.DtcScanResult
 import com.example.model.DtcScanStatus
+import com.example.model.DtcStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -72,7 +73,13 @@ class RealDtcScanner(
                             Log.w(TAG, "Mode $mode query on header $header returned invalid or timeout: $resp")
                         } else {
                             successfulQueries++
-                            val codes = DtcDecoder.decodeDtcResponse(resp, defaultModule = assignedModule)
+                            val status = when (mode) {
+                                "03" -> DtcStatus.CONFIRMED
+                                "07" -> DtcStatus.PENDING
+                                "0A" -> DtcStatus.PERMANENT
+                                else -> DtcStatus.UNKNOWN
+                            }
+                            val codes = DtcDecoder.decodeDtcResponse(resp, defaultModule = assignedModule, status = status)
                             codes.forEach { code ->
                                 if (seenCodes.add(code.code)) {
                                     dtcResults.add(code)

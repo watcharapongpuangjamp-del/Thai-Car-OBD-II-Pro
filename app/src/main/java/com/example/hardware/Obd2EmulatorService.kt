@@ -4,6 +4,7 @@ import com.example.model.AppOperationMode
 import com.example.model.ConnectionState
 import com.example.model.DtcCode
 import com.example.model.DtcSeverity
+import com.example.model.DtcStatus
 import com.example.model.LiveSensorData
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -131,13 +132,13 @@ class Obd2EmulatorService {
         delay(2000) // Simulate network/ECU wait
         if (_currentScenario.value == SimulatorScenario.SENSOR_FAULT) {
             return listOf(
-                DtcCode("P0171", "ECM", "System Too Lean (Bank 1)", "ส่วนผสมเชื้อเพลิงบางเกินไป", DtcSeverity.WARNING, AppOperationMode.SIMULATOR),
-                DtcCode("P0087", "ECM", "Fuel Rail/System Pressure - Too Low", "แรงดันในรางหัวฉีดต่ำเกินไป", DtcSeverity.CRITICAL, AppOperationMode.SIMULATOR)
+                DtcCode("P0171", "ECM", "System Too Lean (Bank 1)", "ส่วนผสมเชื้อเพลิงบางเกินไป", DtcSeverity.WARNING, DtcStatus.CONFIRMED, AppOperationMode.SIMULATOR),
+                DtcCode("P0087", "ECM", "Fuel Rail/System Pressure - Too Low", "แรงดันในรางหัวฉีดต่ำเกินไป", DtcSeverity.CRITICAL, DtcStatus.CONFIRMED, AppOperationMode.SIMULATOR)
             )
         }
         if (_currentScenario.value == SimulatorScenario.OVERHEAT_WARNING) {
              return listOf(
-                DtcCode("P0217", "ECM", "Engine Coolant Over Temperature Condition", "อุณหภูมิน้ำหล่อเย็นสูงเกินกำหนด", DtcSeverity.CRITICAL, AppOperationMode.SIMULATOR)
+                DtcCode("P0217", "ECM", "Engine Coolant Over Temperature Condition", "อุณหภูมิน้ำหล่อเย็นสูงเกินกำหนด", DtcSeverity.CRITICAL, DtcStatus.CONFIRMED, AppOperationMode.SIMULATOR)
             )
         }
         return emptyList()
