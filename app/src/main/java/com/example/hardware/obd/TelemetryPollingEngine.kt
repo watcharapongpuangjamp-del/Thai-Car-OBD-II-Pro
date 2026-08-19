@@ -19,7 +19,7 @@ import kotlinx.coroutines.withContext
 
 class TelemetryPollingEngine(
     private val protocolEngine: ObdProtocolEngine,
-    private val elmDriver: Elm327Driver
+    private val elmDriver: IElm327Driver
 ) {
 
     companion object {
@@ -41,11 +41,25 @@ class TelemetryPollingEngine(
     private var unsupportedRequests = 0
     private var lastSuccessfulPacketTimestamp = System.currentTimeMillis()
 
+    // Cached sensor values across adaptive cycles
+    private var cachedRpm: Int? = null
+    private var cachedSpeed: Int? = null
+    private var cachedThrottle: Int? = null
+    private var cachedCoolant: Int? = null
+    private var cachedBoost: Float? = null
+    private var cachedLoad: Int? = null
+    private var cachedIat: Int? = null
+    private var cachedFuelRate: Float? = null
+    private var cachedVoltage: Float? = null
+
+    private var cycleCounter = 0
+
     fun startPolling() {
         stopPolling()
         consecutiveErrors = 0
         lastSuccessfulPacketTimestamp = System.currentTimeMillis()
-        Log.i(TAG, "Starting Adaptive Real Hardware OBD Telemetry Polling loop with 500ms stale watchdog...")
+        cycleCounter = 0
+        Log.i(TAG, "Starting Adaptive Real Hardware OBD Telemetry Polling (FAST ~5Hz, MEDIUM ~2Hz, SLOW ~1Hz)...")
 
         pollingJob = pollingScope.launch {
             var windowStartTime = System.currentTimeMillis()
@@ -55,18 +69,18 @@ class TelemetryPollingEngine(
 
             while (isActive) {
                 val cycleStartTime = System.currentTimeMillis()
+                cycleCounter++
 
                 try {
-                    val currentData = pollAdaptiveSensors()
+                    val pollResult = pollAdaptiveSensorsBySchedule(cycleCounter)
                     val cycleDuration = System.currentTimeMillis() - cycleStartTime
                     
-                    // Check if USB buffer / response was idle for > 500ms (no successful PIDs or timeout)
                     val idleDuration = System.currentTimeMillis() - lastSuccessfulPacketTimestamp
-                    if (idleDuration > 500) {
-                        Log.w(TAG, "USB buffer idle for ${idleDuration}ms (>500ms threshold). Triggering DISCONNECTED_STALE.")
+                    if (idleDuration > 1500) {
+                        Log.w(TAG, "USB buffer idle for ${idleDuration}ms (>1500ms threshold). Triggering DISCONNECTED_STALE.")
                         _telemetryFlow.value = LiveSensorData.disconnected(
                             AppOperationMode.REAL_HARDWARE,
-                            "ข้อมูลค้างเติ่ง: USB Buffer ว่างนานกว่า 500ms (${idleDuration}ms)"
+                            "ข้อมูลขาดหาย: USB Buffer ว่างนานกว่า 1.5s (${idleDuration}ms)"
                         ).copy(connectionState = ConnectionState.DISCONNECTED_STALE)
                         break
                     }
@@ -74,29 +88,27 @@ class TelemetryPollingEngine(
                     consecutiveErrors = 0
                     lastSuccessfulPacketTimestamp = System.currentTimeMillis()
 
-                    pidsQueriedInWindow += currentData.queriedCount
+                    pidsQueriedInWindow += pollResult.queriedCount
                     if (System.currentTimeMillis() - windowStartTime >= 1000) {
                         currentPidsPerSec = pidsQueriedInWindow
-                        if (currentPidsPerSec < 8) pollingIntervalMs = maxOf(50L, pollingIntervalMs - 20)
-                        else if (currentPidsPerSec > 12) pollingIntervalMs = minOf(500L, pollingIntervalMs + 20)
                         pidsQueriedInWindow = 0
                         windowStartTime = System.currentTimeMillis()
                     }
                     
-                    delay(pollingIntervalMs)
-
                     val activeProtocol = protocolEngine.getActiveProtocol()
                     val isConnected = activeProtocol.id != "UNKNOWN"
                     val connectionState = if (isConnected) ConnectionState.CONNECTED else ConnectionState.ECU_NOT_RESPONDING
 
-                    _telemetryFlow.value = currentData.sensorData.copy(
+                    _telemetryFlow.value = pollResult.sensorData.copy(
                         isConnected = isConnected,
                         connectionState = connectionState,
                         pidPerSec = currentPidsPerSec,
                         latencyMs = cycleDuration.toInt(),
                         mode = AppOperationMode.REAL_HARDWARE,
-                        statusMessage = if (isConnected) "กำลังอ่านข้อมูลสด (โปรโตคอล: ${activeProtocol.id})" else "รอการเชื่อมต่อ ECU"
+                        statusMessage = if (isConnected) "กำลังอ่านข้อมูลสด [Req: $totalRequests, Success: $successRequests, Timeout: $timeoutRequests]" else "รอการเชื่อมต่อ ECU"
                     )
+
+                    delay(pollingIntervalMs)
 
                 } catch (e: Exception) {
                     consecutiveErrors++
@@ -104,17 +116,15 @@ class TelemetryPollingEngine(
                     Log.w(TAG, "Telemetry adaptive polling error ($consecutiveErrors/5): ${e.message}")
                     
                     val idleDuration = System.currentTimeMillis() - lastSuccessfulPacketTimestamp
-                    if (consecutiveErrors >= 5 || idleDuration > 500) {
+                    if (consecutiveErrors >= 5 || idleDuration > 2000) {
                         _telemetryFlow.value = LiveSensorData.disconnected(
                             AppOperationMode.REAL_HARDWARE,
-                            "ขาดการติดต่อ / USB Buffer ว่างนานเกิน 500ms: ${e.localizedMessage}"
+                            "ขาดการติดต่อ / USB Buffer ว่างนานเกินกำหนด: ${e.localizedMessage}"
                         ).copy(connectionState = ConnectionState.DISCONNECTED_STALE)
                         break
                     }
+                    delay(300)
                 }
-
-                // Adaptive sleep interval based on ECU latency
-                delay(150)
             }
         }
     }
@@ -124,132 +134,124 @@ class TelemetryPollingEngine(
         val queriedCount: Int
     )
 
-    private suspend fun pollAdaptiveSensors(): AdaptivePollResult = withContext(Dispatchers.IO) {
-        var queried = 0
+    private suspend fun pollAdaptiveSensorsBySchedule(cycle: Int): AdaptivePollResult = withContext(Dispatchers.IO) {
+        var queriedCount = 0
 
-        // FAST PIDs (~5Hz target): RPM, Speed, Throttle
-        queried++
+        // 1. FAST PIDs (~5Hz / Every cycle): RPM (0x0C), Speed (0x0D)
         totalRequests++
-        val rpmFrame = protocolEngine.readPid(0x0C).getOrNull()
-        val rpm = if (rpmFrame != null) {
+        queriedCount++
+        val rpmFrame = protocolEngine.readPid(0x0C)
+        if (rpmFrame.isSuccess) {
             successRequests++
-            PidDecoder.decodeRpm(rpmFrame.data)
+            cachedRpm = PidDecoder.decodeRpm(rpmFrame.getOrThrow().data)
         } else {
-            unsupportedRequests++
-            null
+            timeoutRequests++
         }
 
-        queried++
         totalRequests++
-        val speedFrame = protocolEngine.readPid(0x0D).getOrNull()
-        val speed = if (speedFrame != null) {
+        queriedCount++
+        val speedFrame = protocolEngine.readPid(0x0D)
+        if (speedFrame.isSuccess) {
             successRequests++
-            PidDecoder.decodeSpeed(speedFrame.data)
+            cachedSpeed = PidDecoder.decodeSpeed(speedFrame.getOrThrow().data)
         } else {
-            unsupportedRequests++
-            null
+            timeoutRequests++
         }
 
-        queried++
-        totalRequests++
-        val throttleFrame = protocolEngine.readPid(0x11).getOrNull()
-        val throttle = if (throttleFrame != null) {
-            successRequests++
-            PidDecoder.decodeThrottlePosition(throttleFrame.data)
-        } else {
-            unsupportedRequests++
-            null
-        }
-
-        // MEDIUM PIDs (~2Hz): Coolant, MAP, Load
-        queried++
-        totalRequests++
-        val ectFrame = protocolEngine.readPid(0x05).getOrNull()
-        val ect = if (ectFrame != null) {
-            successRequests++
-            PidDecoder.decodeCoolantTemp(ectFrame.data)
-        } else {
-            unsupportedRequests++
-            null
-        }
-
-        queried++
-        totalRequests++
-        val mapFrame = protocolEngine.readPid(0x0B).getOrNull()
-        val boost = if (mapFrame != null) {
-            successRequests++
-            PidDecoder.decodeBoostPressureBar(mapFrame.data)
-        } else {
-            unsupportedRequests++
-            null
-        }
-
-        queried++
-        totalRequests++
-        val loadFrame = protocolEngine.readPid(0x04).getOrNull()
-        val load = if (loadFrame != null) {
-            successRequests++
-            PidDecoder.decodeEngineLoad(loadFrame.data)
-        } else {
-            unsupportedRequests++
-            null
-        }
-
-        // SLOW PIDs (~1Hz): Intake Temp, MAF, Voltage
-        queried++
-        totalRequests++
-        val iatFrame = protocolEngine.readPid(0x0F).getOrNull()
-        val iat = if (iatFrame != null) {
-            successRequests++
-            PidDecoder.decodeIntakeAirTemp(iatFrame.data)
-        } else {
-            unsupportedRequests++
-            null
-        }
-
-        queried++
-        totalRequests++
-        val mafFrame = protocolEngine.readPid(0x10).getOrNull()
-        val fuelRate = if (mafFrame != null) {
-            successRequests++
-            val mafGps = PidDecoder.decodeMafAirFlow(mafFrame.data)
-            PidDecoder.estimateFuelRateLph(mafGps, speed ?: 0)
-        } else {
-            unsupportedRequests++
-            null
-        }
-
-        var voltage: Float? = null
-        try {
-            val atrvRaw = elmDriver.sendRawCommand("ATRV", 500)
-            voltage = PidDecoder.parseAtRvVoltage(atrvRaw)
-            if (voltage != null && voltage <= 0f) voltage = null
-        } catch (_: Exception) {
-            val voltFrame = protocolEngine.readPid(0x42).getOrNull()
-            if (voltFrame != null) {
-                voltage = PidDecoder.decodeControlModuleVoltage(voltFrame.data)
+        // 2. MEDIUM PIDs (~2Hz / Every 2 cycles): Coolant (0x05), Throttle (0x11), Engine Load (0x04)
+        if (cycle % 2 == 0) {
+            totalRequests++
+            queriedCount++
+            val ectFrame = protocolEngine.readPid(0x05)
+            if (ectFrame.isSuccess) {
+                successRequests++
+                cachedCoolant = PidDecoder.decodeCoolantTemp(ectFrame.getOrThrow().data)
+            } else {
+                timeoutRequests++
             }
+
+            totalRequests++
+            queriedCount++
+            val throttleFrame = protocolEngine.readPid(0x11)
+            if (throttleFrame.isSuccess) {
+                successRequests++
+                cachedThrottle = PidDecoder.decodeThrottlePosition(throttleFrame.getOrThrow().data)
+            } else {
+                timeoutRequests++
+            }
+
+            totalRequests++
+            queriedCount++
+            val loadFrame = protocolEngine.readPid(0x04)
+            if (loadFrame.isSuccess) {
+                successRequests++
+                cachedLoad = PidDecoder.decodeEngineLoad(loadFrame.getOrThrow().data)
+            } else {
+                timeoutRequests++
+            }
+        }
+
+        // 3. SLOW PIDs (~1Hz / Every 5 cycles): Intake Temp (0x0F), MAF (0x10), Boost/MAP (0x0B), Voltage (ATRV)
+        if (cycle % 5 == 0) {
+            totalRequests++
+            queriedCount++
+            val iatFrame = protocolEngine.readPid(0x0F)
+            if (iatFrame.isSuccess) {
+                successRequests++
+                cachedIat = PidDecoder.decodeIntakeAirTemp(iatFrame.getOrThrow().data)
+            } else {
+                timeoutRequests++
+            }
+
+            totalRequests++
+            queriedCount++
+            val mafFrame = protocolEngine.readPid(0x10)
+            if (mafFrame.isSuccess) {
+                successRequests++
+                val mafGps = PidDecoder.decodeMafAirFlow(mafFrame.getOrThrow().data)
+                cachedFuelRate = PidDecoder.estimateFuelRateLph(mafGps, cachedSpeed ?: 0)
+            } else {
+                timeoutRequests++
+            }
+
+            totalRequests++
+            queriedCount++
+            val mapFrame = protocolEngine.readPid(0x0B)
+            if (mapFrame.isSuccess) {
+                successRequests++
+                cachedBoost = PidDecoder.decodeBoostPressureBar(mapFrame.getOrThrow().data)
+            } else {
+                timeoutRequests++
+            }
+
+            try {
+                val atrvRaw = elmDriver.sendRawCommand("ATRV", 400)
+                val volt = PidDecoder.parseAtRvVoltage(atrvRaw)
+                if (volt != null && volt > 0f) {
+                    cachedVoltage = volt
+                }
+            } catch (_: Exception) {}
         }
 
         val sensorData = LiveSensorData(
             isConnected = true,
             connectionState = ConnectionState.CONNECTED,
-            rpm = rpm,
-            speedKmh = speed,
-            coolantTempC = ect,
-            batteryVoltage = voltage,
-            boostPressureBar = boost,
-            fuelRateLph = fuelRate,
-            throttlePosPercent = throttle,
-            intakeTempC = iat,
-            engineLoadPercent = load,
+            rpm = cachedRpm,
+            speedKmh = cachedSpeed,
+            coolantTempC = cachedCoolant,
+            batteryVoltage = cachedVoltage,
+            boostPressureBar = cachedBoost,
+            fuelRateLph = cachedFuelRate,
+            throttlePosPercent = cachedThrottle,
+            intakeTempC = cachedIat,
+            engineLoadPercent = cachedLoad,
             pidPerSec = 0,
             latencyMs = 0,
             mode = AppOperationMode.REAL_HARDWARE,
-            statusMessage = "Adaptive Real Hardware Telemetry Active"
+            statusMessage = "Adaptive Polling Active (FAST/MED/SLOW separated)"
         )
 
-        return@withContext AdaptivePollResult(sensorData, queried)
+        return@withContext AdaptivePollResult(sensorData, queriedCount)
     }
 
     fun stopPolling() {
@@ -257,8 +259,7 @@ class TelemetryPollingEngine(
         pollingJob = null
     }
 
-    fun setPollingInterval(intervalMs: Long) {
-        // Interval controlled by adaptive scheduler
-    }
+    fun setPollingInterval(intervalMs: Long) {}
 }
+
 

@@ -7,14 +7,6 @@ import com.example.model.DtcScanStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-data class EcuModule(
-    val id: String,
-    val name: String,
-    val requestHeader: String,
-    val responseHeader: String,
-    val txCommand: String = "03"
-)
-
 class RealDtcScanner(
     private val elmDriver: IElm327Driver
 ) {
@@ -23,82 +15,128 @@ class RealDtcScanner(
         private const val TAG = "RealDtcScanner"
     }
 
-    private val supportedModules = listOf(
-        EcuModule("ECM", "Engine Control Module", "7E0", "7E8", "03"),
-        EcuModule("TCM", "Transmission Control Module", "7E1", "7E9", "03"),
-        EcuModule("ABS", "Anti-Lock Braking System", "7E2", "7EA", "03"),
-        EcuModule("SRS", "Supplemental Restraint System (Airbag)", "7E3", "7EB", "03"),
-        EcuModule("BCM", "Body Control Module", "7E4", "7EC", "03")
-    )
-
     /**
-     * Performs a comprehensive DTC Scan and returns DtcScanResult.
+     * Performs a comprehensive DTC Scan with Dynamic ECU Discovery and Mode 03 / 07 / 0A support.
      */
     suspend fun performCompleteDtcScan(): DtcScanResult = withContext(Dispatchers.IO) {
         val dtcResults = mutableListOf<DtcCode>()
         val seenCodes = mutableSetOf<String>()
-        var errorsEncountered = false
+        var successfulQueries = 0
+        var totalQueriesAttempted = 0
 
         try {
-            Log.i(TAG, "Starting Global Mode 03 DTC Query...")
-            // 1. Standard Mode 03 (Broadcast)
-            val mode03Raw = elmDriver.sendRawCommand("03", timeoutMs = 3000)
-            if (mode03Raw == "TIMEOUT") {
-                errorsEncountered = true
-            } else {
-                val mode03Codes = DtcDecoder.decodeDtcResponse(mode03Raw, defaultModule = "ECM")
-                mode03Codes.forEach {
-                    if (seenCodes.add(it.code)) {
-                        dtcResults.add(it)
+            Log.i(TAG, "Enabling headers (AT H1) for dynamic ECU discovery...")
+            elmDriver.sendRawCommand("ATH1", 1000)
+
+            // Discover active ECU response headers dynamically (e.g. 7E8, 7E9, 7EA, etc.)
+            val discoveredHeaders = mutableSetOf<String>()
+            try {
+                val pingResp = elmDriver.sendRawCommand("0100", 2000)
+                val lines = pingResp.split("\n", "\r").map { it.trim() }.filter { it.isNotEmpty() }
+                for (line in lines) {
+                    // Typical CAN response header format: e.g. "7E8 06 41 00 BE 3F B8 11"
+                    val parts = line.split("\\s+".toRegex())
+                    if (parts.size >= 2 && parts[0].length == 3 && parts[0].all { it.isLetterOrDigit() }) {
+                        discoveredHeaders.add(parts[0].uppercase())
                     }
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "Dynamic header discovery ping failed: ${e.message}")
             }
 
-            // (Simplified pending/permanent logic)
-            // ... (Add similar error handling for 07, 0A queries)
+            // If no headers discovered dynamically, fallback to standard ECM header 7E8 or general broadcast
+            val targetHeaders = if (discoveredHeaders.isNotEmpty()) {
+                discoveredHeaders.toList()
+            } else {
+                listOf("7E8") // Default ECU header
+            }
 
-            // 4. Targeted CAN Header queries for TCM, ABS, SRS modules
-            for (module in supportedModules) {
-                if (module.id == "ECM") continue
+            Log.i(TAG, "Discovered ECU Response Headers: $targetHeaders")
 
+            val modes = listOf("03", "07", "0A")
+
+            for (header in targetHeaders) {
+                val assignedModule = resolveModuleFromHeader(header)
+                
+                // Set target request header corresponding to response header (e.g., 7E8 -> 7E0)
+                val reqHeader = computeRequestHeader(header)
                 try {
-                    elmDriver.sendRawCommand("ATSH ${module.requestHeader}", timeoutMs = 1000)
-                    val modResponse = elmDriver.sendRawCommand(module.txCommand, timeoutMs = 2000)
-                    
-                    if (modResponse != "TIMEOUT" && !modResponse.contains("ERROR")) {
-                        val moduleCodes = DtcDecoder.decodeDtcResponse(modResponse, defaultModule = module.id)
-                        moduleCodes.forEach {
-                            if (seenCodes.add(it.code)) {
-                                dtcResults.add(it)
+                    elmDriver.sendRawCommand("ATSH $reqHeader", 1000)
+                } catch (_: Exception) {}
+
+                for (mode in modes) {
+                    totalQueriesAttempted++
+                    try {
+                        val resp = elmDriver.sendRawCommand(mode, 3000)
+                        if (resp.isBlank() || resp.contains("TIMEOUT", true) || resp.contains("ERROR", true) || resp.contains("NO DATA", true)) {
+                            Log.w(TAG, "Mode $mode query on header $header returned invalid or timeout: $resp")
+                        } else {
+                            successfulQueries++
+                            val codes = DtcDecoder.decodeDtcResponse(resp, defaultModule = assignedModule)
+                            codes.forEach { code ->
+                                if (seenCodes.add(code.code)) {
+                                    dtcResults.add(code)
+                                }
                             }
                         }
-                    } else {
-                        errorsEncountered = true
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Exception querying Mode $mode on header $header: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    errorsEncountered = true
-                    Log.d(TAG, "Module ${module.name} (${module.id}) not responding: ${e.message}")
-                } finally {
-                    try {
-                        elmDriver.sendRawCommand("ATSH 7DF", timeoutMs = 500)
-                    } catch (_: Exception) {}
                 }
             }
 
+            // Reset headers back to default broadcast 7DF
+            try {
+                elmDriver.sendRawCommand("ATSH 7DF", 500)
+                elmDriver.sendRawCommand("ATH0", 500)
+            } catch (_: Exception) {}
+
+            val status = when {
+                successfulQueries == 0 && totalQueriesAttempted > 0 -> DtcScanStatus.FAILED("All ECU DTC queries failed or timed out")
+                successfulQueries < totalQueriesAttempted && dtcResults.isNotEmpty() -> DtcScanStatus.PARTIAL
+                successfulQueries < totalQueriesAttempted && dtcResults.isEmpty() -> DtcScanStatus.NO_CODES
+                dtcResults.isEmpty() -> DtcScanStatus.NO_CODES
+                else -> DtcScanStatus.SUCCESS
+            }
+
+            Log.i(TAG, "DTC Scan completed. Total DTCs: ${dtcResults.size}, Status: $status")
+            return@withContext DtcScanResult(dtcResults, status)
+
         } catch (e: Exception) {
-            Log.e(TAG, "Exception during comprehensive DTC scan: ${e.message}", e)
+            Log.e(TAG, "Exception during comprehensive dynamic DTC scan: ${e.message}", e)
             return@withContext DtcScanResult(emptyList(), DtcScanStatus.FAILED(e.message ?: "Unknown error"))
         }
+    }
 
-        val status = when {
-            errorsEncountered && dtcResults.isNotEmpty() -> DtcScanStatus.PARTIAL
-            errorsEncountered -> DtcScanStatus.FAILED("Scan failed or timed out in some modules")
-            dtcResults.isEmpty() -> DtcScanStatus.NO_CODES
-            else -> DtcScanStatus.SUCCESS
+    private fun resolveModuleFromHeader(header: String): String {
+        return when (header.uppercase()) {
+            "7E8" -> "ECM"
+            "7E9" -> "TCM"
+            "7EA" -> "ABS"
+            "7EB" -> "SRS"
+            "7EC" -> "BCM"
+            else -> "UNKNOWN_ECU"
         }
+    }
 
-        Log.i(TAG, "DTC Scan completed. Total DTCs: ${dtcResults.size}, Status: $status")
-        return@withContext DtcScanResult(dtcResults, status)
+    private fun computeRequestHeader(responseHeader: String): String {
+        return when (responseHeader.uppercase()) {
+            "7E8" -> "7E0"
+            "7E9" -> "7E1"
+            "7EA" -> "7E2"
+            "7EB" -> "7E3"
+            "7EC" -> "7E4"
+            else -> {
+                // Generic conversion: subtract 8 from last hex char if possible, e.g. 7E8 -> 7E0
+                try {
+                    val base = responseHeader.toInt(16)
+                    val req = base - 8
+                    String.format("%03X", req)
+                } catch (_: Exception) {
+                    "7DF"
+                }
+            }
+        }
     }
 
     /**
@@ -106,15 +144,17 @@ class RealDtcScanner(
      */
     suspend fun clearDtcCodes(): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
-            Log.i(TAG, "Sending Mode 04 (Clear DTC Codes)...")
+            Log.i(TAG, "Sending Mode 04 (Clear DTC Codes & Reset MIL)...")
             val resp = elmDriver.sendRawCommand("04", timeoutMs = 4000)
+            val normalized = ObdResponseNormalizer.normalize(resp, "04")
             
-            // Fix: Check for TIMEOUT or ERROR explicitly
-            if (resp == "TIMEOUT" || resp.contains("ERROR")) {
-                Log.e(TAG, "Mode 04 failed: $resp")
+            // Strict check: must not be TIMEOUT, ERROR, NO DATA, and must contain positive confirmation (44 or OK)
+            if (resp == "TIMEOUT" || resp.contains("ERROR", true) || resp.contains("NO DATA", true) ||
+                (!normalized.contains("44") && !normalized.contains("OK"))) {
+                Log.e(TAG, "Mode 04 clear failed: $resp")
                 Result.failure(Exception("ECU failed to clear DTCs: $resp"))
             } else {
-                Log.i(TAG, "DTC Clear command 04 confirmed")
+                Log.i(TAG, "DTC Clear command 04 confirmed successfully")
                 Result.success(true)
             }
         } catch (e: Exception) {
@@ -123,3 +163,4 @@ class RealDtcScanner(
         }
     }
 }
+

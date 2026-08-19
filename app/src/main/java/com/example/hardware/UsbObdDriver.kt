@@ -207,6 +207,21 @@ class UsbObdDriver(
         _connectionState.value = ConnectionState.ADAPTER_RESPONDING
         _connectionState.value = ConnectionState.PROTOCOL_DETECTED
         _connectionState.value = ConnectionState.ECU_RESPONDING
+
+        // Explicitly validate reading live PID 0x0C (RPM) before LIVE_DATA_VALIDATED and CONNECTED
+        Log.i(TAG, "Validating live data by querying PID 0x0C (RPM)...")
+        val pid0cResult = protocolEngine.readPid(0x0C)
+        if (pid0cResult.isFailure) {
+            val err = pid0cResult.exceptionOrNull()
+            Log.e(TAG, "Live data validation failed on PID 0x0C", err)
+            _connectionState.value = ConnectionState.ECU_NOT_RESPONDING
+            _liveTelemetry.value = LiveSensorData.disconnected(
+                AppOperationMode.REAL_HARDWARE,
+                "ECU ไม่ส่งข้อมูล PID 0x0C (RPM) สำหรับการตรวจสอบความถูกต้อง"
+            )
+            return@withContext ConnectionState.ECU_NOT_RESPONDING
+        }
+
         _connectionState.value = ConnectionState.LIVE_DATA_VALIDATED
         _connectionState.value = ConnectionState.CONNECTED
 
@@ -215,6 +230,7 @@ class UsbObdDriver(
 
         return@withContext ConnectionState.CONNECTED
     }
+
 
     private fun startPollingStream() {
         pollingEngine.startPolling()
