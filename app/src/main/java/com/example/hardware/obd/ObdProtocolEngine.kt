@@ -12,26 +12,69 @@ data class SupportedPids(
 }
 
 class ObdProtocolEngine(
-    private val elmDriver: Elm327Driver
+    private val elmDriver: IElm327Driver
 ) {
 
     companion object {
         private const val TAG = "ObdProtocolEngine"
+        // Ordered scan list for Auto detection
+        val AUTO_SCAN_ORDER = listOf(
+            ObdProtocol.ISO_15765_4_CAN_11BIT_500K,
+            ObdProtocol.ISO_15765_4_CAN_29BIT_500K,
+            ObdProtocol.ISO_14230_4_KWP_FAST,
+            ObdProtocol.ISO_9141_2
+        )
     }
 
     private var activeProtocol: ObdProtocol = ObdProtocol.UNKNOWN
     private var supportedPids: SupportedPids = SupportedPids()
 
-    suspend fun initializeProtocolEngine(): Result<ObdProtocol> = withContext(Dispatchers.IO) {
-        val handshakeResult = elmDriver.performHandshake()
-        if (handshakeResult.isFailure) {
-            return@withContext handshakeResult
+    suspend fun initializeProtocolEngine(targetProtocol: ObdProtocol = ObdProtocol.AUTO): Result<ObdProtocol> = withContext(Dispatchers.IO) {
+        ObdDiagnosticLogger.log("PROTOCOL_ENGINE", "Initializing with protocol: ${targetProtocol.id}")
+        
+        val protocolToUse = if (targetProtocol == ObdProtocol.AUTO) {
+            detectProtocol()
+        } else {
+            setProtocol(targetProtocol)
         }
-        activeProtocol = handshakeResult.getOrDefault(ObdProtocol.UNKNOWN)
-
+        
+        if (protocolToUse == ObdProtocol.UNKNOWN) {
+            return@withContext Result.failure(DiagnosticError.ProtocolError("ERR_PROTOCOL_DETECT", "ไม่สามารถตรวจจับหรือตั้งค่าโปรโตคอลได้", "Failed to detect or set protocol"))
+        }
+        
+        activeProtocol = protocolToUse
+        ObdDiagnosticLogger.log("PROTOCOL_ENGINE", "Protocol Ready: ${activeProtocol.id}")
+        
         // Discover supported PIDs for Mode 01
         discoverSupportedPids()
+        
         Result.success(activeProtocol)
+    }
+
+    private suspend fun detectProtocol(): ObdProtocol {
+        for (protocol in AUTO_SCAN_ORDER) {
+            ObdDiagnosticLogger.log("AUTO_DETECT", "Trying: ${protocol.id}")
+            if (setProtocol(protocol) != ObdProtocol.UNKNOWN) {
+                // Verify with a simple ping
+                val ping = elmDriver.sendRawCommand("0100", timeoutMs = 2000)
+                if (ping.contains("41", ignoreCase = true)) {
+                    ObdDiagnosticLogger.log("AUTO_DETECT", "Detected: ${protocol.id}")
+                    return protocol
+                }
+            }
+        }
+        return ObdProtocol.UNKNOWN
+    }
+
+    private suspend fun setProtocol(protocol: ObdProtocol): ObdProtocol {
+        val command = "ATSP${protocol.protocolNumber}"
+        val response = elmDriver.sendRawCommand(command, timeoutMs = 1000)
+        return if (response.contains("OK", ignoreCase = true)) {
+            protocol
+        } else {
+            ObdDiagnosticLogger.log("SET_PROTOCOL", "Failed: ${protocol.id} | Response: $response")
+            ObdProtocol.UNKNOWN
+        }
     }
 
     suspend fun discoverSupportedPids(): SupportedPids = withContext(Dispatchers.IO) {

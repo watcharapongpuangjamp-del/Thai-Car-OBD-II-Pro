@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- FTDI -->
+    <usb-device vendor-id="1027" />
+    <!-- CH340 -->
+    <usb-device vendor-id="6790" />
+    <!-- PL2303 -->
+    <usb-device vendor-id="1659" />
+</resources>

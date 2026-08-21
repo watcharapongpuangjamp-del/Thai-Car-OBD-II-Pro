@@ -58,14 +58,40 @@ class Elm327Driver(
             elmVersion = atiResp.replace(">", "").trim()
             Log.i(TAG, "ELM327 Version: $elmVersion")
 
+
             // 6. Set Protocol to Auto
             val atsp0Resp = sendRawCommand("ATSP0", timeoutMs = 1500)
+            ObdDiagnosticLogger.log("ATSP0", atsp0Resp)
             Log.i(TAG, "ATSP0 Response: $atsp0Resp")
 
             // 7. Verify ECU Connection with Mode 01 PID 00
             Log.i(TAG, "Sending 0100 to detect ECU protocol...")
-            val pid00Resp = sendRawCommand("0100", timeoutMs = 4000)
-            Log.i(TAG, "0100 Response: $pid00Resp")
+            var pid00Resp = sendRawCommand("0100", timeoutMs = 4000)
+            ObdDiagnosticLogger.log("0100", pid00Resp)
+            Log.i(TAG, "0100 Response (Auto): $pid00Resp")
+
+            // Retry strategy for CAN and K-Line protocols if Auto failed
+            if (pid00Resp.contains("NO DATA", ignoreCase = true) ||
+                pid00Resp.contains("UNABLE TO CONNECT", ignoreCase = true) ||
+                pid00Resp.contains("BUS INIT: ERROR", ignoreCase = true)
+            ) {
+                Log.w(TAG, "Auto protocol detection failed. Retrying...")
+                
+                // Try ISO 15765-4 CAN 11bit 500k (Protocol 6)
+                sendRawCommand("ATSP6", timeoutMs = 1000)
+                pid00Resp = sendRawCommand("0100", timeoutMs = 4000)
+                ObdDiagnosticLogger.log("0100 (ATSP6)", pid00Resp)
+                Log.i(TAG, "0100 Response (ATSP6): $pid00Resp")
+
+                // Try ISO 14230-4 K-Line (Protocol 4/5)
+                if (pid00Resp.contains("NO DATA", ignoreCase = true) || pid00Resp.contains("BUS INIT: ERROR", ignoreCase = true)) {
+                    Log.w(TAG, "CAN protocol detection failed. Retrying with K-Line protocols...")
+                    sendRawCommand("ATSP5", timeoutMs = 1000) // K-Line Fast Init
+                    pid00Resp = sendRawCommand("0100", timeoutMs = 4000)
+                    ObdDiagnosticLogger.log("0100 (ATSP5)", pid00Resp)
+                    Log.i(TAG, "0100 Response (ATSP5): $pid00Resp")
+                }
+            }
 
             val normalized = ObdResponseNormalizer.normalize(pid00Resp, "0100")
             if (normalized.contains("NO DATA", ignoreCase = true) ||
@@ -77,7 +103,7 @@ class Elm327Driver(
                     DiagnosticError.EcuError(
                         "ERR_ECU_NO_CONNECT",
                         "ECU ไม่ตอบสนองต่อคำสั่ง 0100 (กรุณาบิดกุญแจรถยนต์ไปที่ตำแหน่ง ON หรือสตาร์ทเครื่องยนต์)",
-                        "ECU failed to respond to 0100 ping. Ensure ignition is ON"
+                        "ECU failed to respond to 0100 ping. Ensure ignition is ON. Raw: $pid00Resp"
                     )
                 )
             }
@@ -157,6 +183,7 @@ class Elm327Driver(
         }
 
         val response = resultBuilder.toString().trim()
+        ObdDiagnosticLogger.log(command, response)
         if (response.isEmpty()) {
             throw DiagnosticError.Elm327Error(
                 "ERR_ELM_TIMEOUT",

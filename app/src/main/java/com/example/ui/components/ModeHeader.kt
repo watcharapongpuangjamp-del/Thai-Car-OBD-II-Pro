@@ -100,6 +100,7 @@ fun ModeHeader(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
+                        // Adapter Status
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
@@ -107,20 +108,48 @@ fun ModeHeader(
                                     .clip(RoundedCornerShape(5.dp))
                                     .background(
                                         when {
-                                            telemetry.connectionState == ConnectionState.CONNECTED -> EmeraldConnected
-                                            telemetry.connectionState.isError || telemetry.connectionState == ConnectionState.DISCONNECTED -> RedCritical
+                                            telemetry.connectionState.ordinal >= com.example.model.ConnectionState.USB_OPEN.ordinal -> EmeraldConnected
+                                            telemetry.connectionState.isError || telemetry.connectionState == com.example.model.ConnectionState.DISCONNECTED -> RedCritical
                                             else -> AmberWarning
                                         }
                                     )
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = telemetry.connectionState.labelTh,
+                                text = "Adapter: ${if (telemetry.connectionState.ordinal >= com.example.model.ConnectionState.USB_OPEN.ordinal) "Connected" else "Disconnected"}",
                                 color = TextPrimary,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
                             )
                         }
+                        
+                        Spacer(modifier = Modifier.height(4.dp))
+                        
+                        // Vehicle Status
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(RoundedCornerShape(5.dp))
+                                    .background(
+                                        when {
+                                            telemetry.connectionState == com.example.model.ConnectionState.CONNECTED -> EmeraldConnected
+                                            telemetry.connectionState.ordinal >= com.example.model.ConnectionState.PROTOCOL_DETECTED.ordinal -> AmberWarning
+                                            else -> TextSecondary
+                                        }
+                                    )
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Vehicle (ECU): ${telemetry.connectionState.labelTh}",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
+                        
+                        Spacer(modifier = Modifier.height(4.dp))
+                        
                         Text(
                             text = telemetry.statusMessage,
                             color = TextSecondary,
