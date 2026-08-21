@@ -153,6 +153,12 @@ enum class DtcStatus {
     CONFIRMED, PENDING, PERMANENT, UNKNOWN
 }
 
+data class VehicleInfo(
+    val brand: String,
+    val model: String,
+    val year: Int
+)
+
 data class DtcCode(
     val code: String,
     val module: String, // ECM, TCM, ABS, SRS, BCM
