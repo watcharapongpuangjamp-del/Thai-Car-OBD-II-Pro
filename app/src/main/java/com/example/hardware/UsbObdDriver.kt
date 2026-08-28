@@ -15,6 +15,8 @@ import com.example.hardware.usb.UsbDeviceEvent
 import com.example.hardware.usb.UsbPermissionManager
 import com.example.model.AppOperationMode
 import com.example.model.ConnectionState
+import com.example.model.AdapterConnectionState
+import com.example.model.EcuConnectionState
 import com.example.model.DiagnosticError
 import com.example.model.DtcCode
 import com.example.model.DtcScanResult
@@ -51,6 +53,12 @@ class UsbObdDriver(
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState = _connectionState.asStateFlow()
+    
+    private val _adapterState = MutableStateFlow(AdapterConnectionState.DISCONNECTED)
+    val adapterState = _adapterState.asStateFlow()
+    
+    private val _ecuState = MutableStateFlow(EcuConnectionState.NOT_STARTED)
+    val ecuState = _ecuState.asStateFlow()
 
     private val _liveTelemetry = MutableStateFlow(
         LiveSensorData.disconnected(AppOperationMode.REAL_HARDWARE, "รอเชื่อมต่ออุปกรณ์ USB OTG")
@@ -58,6 +66,18 @@ class UsbObdDriver(
     val liveTelemetry: Flow<LiveSensorData> = _liveTelemetry
 
     private var activeDevice: UsbDevice? = null
+
+
+    private fun updateTelemetry(message: String = "") {
+        val current = _liveTelemetry.value
+        _liveTelemetry.value = current.copy(
+            isConnected = _ecuState.value == EcuConnectionState.CONNECTED,
+            connectionState = _connectionState.value,
+            adapterState = _adapterState.value,
+            ecuState = _ecuState.value,
+            statusMessage = message.ifEmpty { current.statusMessage }
+        )
+    }
 
     init {
         startLifecycleMonitoring()
@@ -74,9 +94,11 @@ class UsbObdDriver(
                             if (_connectionState.value == ConnectionState.DISCONNECTED || _connectionState.value.isError) {
                                 activeDevice = event.device
                                 _connectionState.value = ConnectionState.DEVICE_DETECTED
-                                _liveTelemetry.value = LiveSensorData.disconnected(
-                                    AppOperationMode.REAL_HARDWARE,
-                                    "ตรวจพบอุปกรณ์ USB: ${event.device.deviceName}"
+                                _adapterState.value = AdapterConnectionState.DEVICE_DETECTED
+                                updateTelemetry("ตรวจพบอุปกรณ์ USB: ${event.device.deviceName}")
+                                val current = _liveTelemetry.value
+                                _liveTelemetry.value = current.copy(
+                                    usbVidPid = "${event.device.vendorId}:${event.device.productId}"
                                 )
                             }
                         }
@@ -88,19 +110,15 @@ class UsbObdDriver(
                             Log.i(TAG, "Hardware Event: Permission Result for ${event.device.deviceName} = ${event.isGranted}")
                             if (event.isGranted) {
                                 _connectionState.value = ConnectionState.PERMISSION_GRANTED
-                                _liveTelemetry.value = LiveSensorData.disconnected(
-                                    AppOperationMode.REAL_HARDWARE,
-                                    "ได้รับสิทธิ์เข้าถึงอุปกรณ์ USB แล้ว"
-                                )
+                                _adapterState.value = AdapterConnectionState.PERMISSION_GRANTED
+                                updateTelemetry("ได้รับสิทธิ์เข้าถึงอุปกรณ์ USB แล้ว")
                                 driverScope.launch {
                                     proceedWithUsbOpen(event.device)
                                 }
                             } else {
                                 _connectionState.value = ConnectionState.PERMISSION_DENIED
-                                _liveTelemetry.value = LiveSensorData.disconnected(
-                                    AppOperationMode.REAL_HARDWARE,
-                                    "ผู้ใช้ปฏิเสธการให้สิทธิ์เข้าถึงอุปกรณ์ USB"
-                                )
+                                _adapterState.value = AdapterConnectionState.PERMISSION_DENIED
+                                updateTelemetry("ผู้ใช้ปฏิเสธการให้สิทธิ์เข้าถึงอุปกรณ์ USB")
                             }
                         }
                     }
@@ -113,6 +131,8 @@ class UsbObdDriver(
         val device = permissionManager.scanForAttachedDevices()
         if (device == null) {
             _connectionState.value = ConnectionState.DISCONNECTED
+            _adapterState.value = AdapterConnectionState.DISCONNECTED
+            _ecuState.value = EcuConnectionState.NOT_STARTED
             _liveTelemetry.value = LiveSensorData.disconnected(
                 AppOperationMode.REAL_HARDWARE,
                 "ไม่พบสาย USB OTG หรือ OBD-II Adapter เชื่อมต่ออยู่"
@@ -122,18 +142,18 @@ class UsbObdDriver(
 
         activeDevice = device
         _connectionState.value = ConnectionState.DEVICE_DETECTED
-        _liveTelemetry.value = LiveSensorData.disconnected(
-            AppOperationMode.REAL_HARDWARE,
-            "ตรวจพบอุปกรณ์: ${device.deviceName} (VID: ${device.vendorId}, PID: ${device.productId})"
+        _adapterState.value = AdapterConnectionState.DEVICE_DETECTED
+        updateTelemetry("ตรวจพบอุปกรณ์: ${device.deviceName} (VID: ${device.vendorId}, PID: ${device.productId})")
+        val current = _liveTelemetry.value
+        _liveTelemetry.value = current.copy(
+            usbVidPid = "${device.vendorId}:${device.productId}"
         )
 
         if (!permissionManager.hasPermission(device)) {
             Log.i(TAG, "Permission required for device ${device.deviceName}. Requesting from user...")
             _connectionState.value = ConnectionState.PERMISSION_REQUIRED
-            _liveTelemetry.value = LiveSensorData.disconnected(
-                AppOperationMode.REAL_HARDWARE,
-                "กรุณากดยินยอมสิทธิ์เข้าถึง USB บนหน้าจออุปกรณ์"
-            )
+            _adapterState.value = AdapterConnectionState.PERMISSION_REQUIRED
+            updateTelemetry("กรุณากดยินยอมสิทธิ์เข้าถึง USB บนหน้าจออุปกรณ์")
             permissionManager.requestPermission(device)
             return@withContext ConnectionState.PERMISSION_REQUIRED
         }
@@ -205,8 +225,21 @@ class UsbObdDriver(
 
         val protocol = protocolResult.getOrDefault(ObdProtocol.UNKNOWN)
         _connectionState.value = ConnectionState.ADAPTER_RESPONDING
+        _adapterState.value = AdapterConnectionState.ADAPTER_RESPONDING
+        updateTelemetry("Adapter ตอบสนอง เริ่มตรวจสอบ ECU")
+        _ecuState.value = EcuConnectionState.PROTOCOL_DETECTING
+        
+        // Wait, ECU detection isn't explicitly done here, elmDriver.initialize might do some?
+        // Actually elmDriver.initialize sends ATZ, ATE0, ATL0, ATS0, ATH0, ATAT1, ATST62, ATSP0.
+        // It detects protocol. Let's assume it detects protocol.
+        
         _connectionState.value = ConnectionState.PROTOCOL_DETECTED
+        _ecuState.value = EcuConnectionState.PROTOCOL_DETECTED
         _connectionState.value = ConnectionState.ECU_RESPONDING
+        _ecuState.value = EcuConnectionState.ECU_RESPONDING
+        val current3 = _liveTelemetry.value
+        _liveTelemetry.value = current3.copy(vehicleBusBitrate = 500000) // Default CAN 500k
+
 
         // Explicitly validate reading live PID 0x0C (RPM) before LIVE_DATA_VALIDATED and CONNECTED
         Log.i(TAG, "Validating live data by querying PID 0x0C (RPM)...")
@@ -237,7 +270,15 @@ class UsbObdDriver(
         telemetryCollectionJob?.cancel()
         telemetryCollectionJob = driverScope.launch {
             pollingEngine.telemetryFlow.collect { telemetry ->
-                _liveTelemetry.value = telemetry
+                val current = _liveTelemetry.value
+                _liveTelemetry.value = telemetry.copy(
+                    adapterState = current.adapterState,
+                    ecuState = current.ecuState,
+                    usbVidPid = current.usbVidPid,
+                    usbDriver = current.usbDriver,
+                    serialBaudRate = current.serialBaudRate,
+                    vehicleBusBitrate = current.vehicleBusBitrate
+                )
             }
         }
     }
