@@ -404,6 +404,15 @@ class UsbObdDriver(
         return@withContext try {
             dtcScanner.performCompleteDtcScan()
         } finally {
+            // DTC scanning changes ELM header settings; restore the default before telemetry resumes.
+            if (transport.isOpen()) {
+                try {
+                    elmDriver.sendRawCommand("ATSH 7DF", 500)
+                    elmDriver.sendRawCommand("ATH0", 500)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not restore default ELM header settings: ${e.message}")
+                }
+            }
             // Always resume polling after the DTC sweep, including exceptional exits.
             if (_connectionState.value == ConnectionState.CONNECTED && transport.isOpen()) {
                 startPollingStream()
