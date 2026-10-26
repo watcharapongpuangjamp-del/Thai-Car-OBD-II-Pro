@@ -169,40 +169,76 @@ class UsbObdDriver(
             val exception = openResult.exceptionOrNull()
             Log.e(TAG, "Failed to open USB transport", exception)
             _connectionState.value = ConnectionState.USB_OPEN_FAILED
+            _adapterState.value = AdapterConnectionState.USB_OPEN_FAILED
+            _ecuState.value = EcuConnectionState.NOT_STARTED
             _liveTelemetry.value = LiveSensorData.disconnected(
                 AppOperationMode.REAL_HARDWARE,
                 "เปิดพอร์ต USB ล้มเหลว: ${exception?.localizedMessage ?: "Unknown"}"
+            ).copy(
+                connectionState = ConnectionState.USB_OPEN_FAILED,
+                adapterState = _adapterState.value,
+                ecuState = _ecuState.value,
+                usbVidPid = "${device.vendorId}:${device.productId}"
             )
             return@withContext ConnectionState.USB_OPEN_FAILED
         }
 
         _connectionState.value = ConnectionState.USB_OPEN
+        _adapterState.value = AdapterConnectionState.USB_OPEN
+        _ecuState.value = EcuConnectionState.NOT_STARTED
         _liveTelemetry.value = LiveSensorData.disconnected(
             AppOperationMode.REAL_HARDWARE,
             "เปิดพอร์ต USB สำเร็จ กำลังตรวจสอบการสื่อสาร Serial"
+        ).copy(
+            connectionState = _connectionState.value,
+            adapterState = _adapterState.value,
+            ecuState = _ecuState.value,
+            usbVidPid = "${device.vendorId}:${device.productId}"
         )
 
         // 2. SERIAL_READY
         if (!transport.isOpen()) {
             _connectionState.value = ConnectionState.SERIAL_ERROR
+            _adapterState.value = AdapterConnectionState.SERIAL_ERROR
+            _ecuState.value = EcuConnectionState.NOT_STARTED
             _liveTelemetry.value = LiveSensorData.disconnected(
                 AppOperationMode.REAL_HARDWARE,
                 "พอร์ต Serial ไม่พร้อมใช้งาน"
+            ).copy(
+                connectionState = _connectionState.value,
+                adapterState = _adapterState.value,
+                ecuState = _ecuState.value,
+                usbVidPid = "${device.vendorId}:${device.productId}"
             )
             return@withContext ConnectionState.SERIAL_ERROR
         }
 
         _connectionState.value = ConnectionState.SERIAL_READY
+        _adapterState.value = AdapterConnectionState.SERIAL_READY
         _liveTelemetry.value = LiveSensorData.disconnected(
             AppOperationMode.REAL_HARDWARE,
             "Serial Communication พร้อมใช้งาน (38400 baud, 8N1)"
+        ).copy(
+            connectionState = _connectionState.value,
+            adapterState = _adapterState.value,
+            ecuState = _ecuState.value,
+            usbVidPid = "${device.vendorId}:${device.productId}",
+            serialBaudRate = 38400
         )
 
         // 3. ADAPTER_HANDSHAKE
         _connectionState.value = ConnectionState.ADAPTER_HANDSHAKE
+        _adapterState.value = AdapterConnectionState.ADAPTER_HANDSHAKE
+        _ecuState.value = EcuConnectionState.NOT_STARTED
         _liveTelemetry.value = LiveSensorData.disconnected(
             AppOperationMode.REAL_HARDWARE,
-            "กำลังส่งคำสั่ง Handshake (ATZ, ATE0, ATL0, ATSP0)..."
+            "กำลังส่งคำสั่ง Handshake และตรวจสอบ OBD Protocol..."
+        ).copy(
+            connectionState = _connectionState.value,
+            adapterState = _adapterState.value,
+            ecuState = _ecuState.value,
+            usbVidPid = "${device.vendorId}:${device.productId}",
+            serialBaudRate = 38400
         )
 
         val protocolResult = protocolEngine.initializeProtocolEngine()
@@ -216,9 +252,25 @@ class UsbObdDriver(
                 else -> ConnectionState.ERROR
             }
             _connectionState.value = nextState
+            _adapterState.value = when (nextState) {
+                ConnectionState.ADAPTER_NOT_RESPONDING -> AdapterConnectionState.ADAPTER_NOT_RESPONDING
+                ConnectionState.PROTOCOL_DETECTION_FAILED -> AdapterConnectionState.ADAPTER_RESPONDING
+                else -> _adapterState.value
+            }
+            _ecuState.value = when (nextState) {
+                ConnectionState.ECU_NOT_RESPONDING -> EcuConnectionState.ECU_NOT_RESPONDING
+                ConnectionState.PROTOCOL_DETECTION_FAILED -> EcuConnectionState.PROTOCOL_DETECTION_FAILED
+                else -> EcuConnectionState.NOT_STARTED
+            }
             _liveTelemetry.value = LiveSensorData.disconnected(
                 AppOperationMode.REAL_HARDWARE,
                 error?.localizedMessage ?: "การเชื่อมต่อกับ ELM327/ECU ล้มเหลว"
+            ).copy(
+                connectionState = nextState,
+                adapterState = _adapterState.value,
+                ecuState = _ecuState.value,
+                usbVidPid = "${device.vendorId}:${device.productId}",
+                serialBaudRate = 38400
             )
             return@withContext nextState
         }
@@ -227,18 +279,13 @@ class UsbObdDriver(
         _connectionState.value = ConnectionState.ADAPTER_RESPONDING
         _adapterState.value = AdapterConnectionState.ADAPTER_RESPONDING
         updateTelemetry("Adapter ตอบสนอง เริ่มตรวจสอบ ECU")
-        _ecuState.value = EcuConnectionState.PROTOCOL_DETECTING
-        
-        // Wait, ECU detection isn't explicitly done here, elmDriver.initialize might do some?
-        // Actually elmDriver.initialize sends ATZ, ATE0, ATL0, ATS0, ATH0, ATAT1, ATST62, ATSP0.
-        // It detects protocol. Let's assume it detects protocol.
-        
-        _connectionState.value = ConnectionState.PROTOCOL_DETECTED
         _ecuState.value = EcuConnectionState.PROTOCOL_DETECTED
+        _connectionState.value = ConnectionState.PROTOCOL_DETECTED
+        updateTelemetry("ตรวจพบ OBD Protocol ${protocol.description}; กำลังตรวจสอบการตอบสนองของ ECU")
         _connectionState.value = ConnectionState.ECU_RESPONDING
         _ecuState.value = EcuConnectionState.ECU_RESPONDING
-        val current3 = _liveTelemetry.value
-        _liveTelemetry.value = current3.copy(vehicleBusBitrate = 500000) // Default CAN 500k
+        updateTelemetry("Adapter ตอบสนอง กำลังตรวจสอบ PID จาก ECU")
+        // Do not report a CAN bitrate unless it was actually detected.
 
 
         // Explicitly validate reading live PID 0x0C (RPM) before LIVE_DATA_VALIDATED and CONNECTED
@@ -248,15 +295,26 @@ class UsbObdDriver(
             val err = pid0cResult.exceptionOrNull()
             Log.e(TAG, "Live data validation failed on PID 0x0C", err)
             _connectionState.value = ConnectionState.ECU_NOT_RESPONDING
+            _ecuState.value = EcuConnectionState.ECU_NOT_RESPONDING
             _liveTelemetry.value = LiveSensorData.disconnected(
                 AppOperationMode.REAL_HARDWARE,
                 "ECU ไม่ส่งข้อมูล PID 0x0C (RPM) สำหรับการตรวจสอบความถูกต้อง"
+            ).copy(
+                connectionState = _connectionState.value,
+                adapterState = _adapterState.value,
+                ecuState = _ecuState.value,
+                usbVidPid = "${device.vendorId}:${device.productId}",
+                serialBaudRate = 38400
             )
             return@withContext ConnectionState.ECU_NOT_RESPONDING
         }
 
         _connectionState.value = ConnectionState.LIVE_DATA_VALIDATED
+        _ecuState.value = EcuConnectionState.LIVE_DATA_VALIDATED
+        updateTelemetry("ตรวจสอบ PID 0x0C สำเร็จ กำลังเริ่มอ่านข้อมูลสด")
         _connectionState.value = ConnectionState.CONNECTED
+        _ecuState.value = EcuConnectionState.CONNECTED
+        updateTelemetry("เชื่อมต่อ ELM327 และ ECU สำเร็จ")
 
         // Start Real Telemetry Polling Loop
         startPollingStream()
@@ -271,9 +329,17 @@ class UsbObdDriver(
         telemetryCollectionJob = driverScope.launch {
             pollingEngine.telemetryFlow.collect { telemetry ->
                 val current = _liveTelemetry.value
+                if (!telemetry.isConnected) {
+                    _connectionState.value = telemetry.connectionState
+                    _ecuState.value = when (telemetry.connectionState) {
+                        ConnectionState.DISCONNECTED_STALE,
+                        ConnectionState.ECU_NOT_RESPONDING -> EcuConnectionState.TIMEOUT
+                        else -> EcuConnectionState.ERROR
+                    }
+                }
                 _liveTelemetry.value = telemetry.copy(
                     adapterState = current.adapterState,
-                    ecuState = current.ecuState,
+                    ecuState = if (telemetry.isConnected) current.ecuState else _ecuState.value,
                     usbVidPid = current.usbVidPid,
                     usbDriver = current.usbDriver,
                     serialBaudRate = current.serialBaudRate,
@@ -285,14 +351,22 @@ class UsbObdDriver(
 
     private fun handleDeviceDetached(device: UsbDevice) {
         driverScope.launch {
+            // Ignore detach notifications for a device that is not the active adapter.
+            if (activeDevice?.deviceId != device.deviceId) return@launch
             pollingEngine.stopPolling()
             telemetryCollectionJob?.cancel()
             transport.close()
             activeDevice = null
             _connectionState.value = ConnectionState.DEVICE_DISCONNECTED
+            _adapterState.value = AdapterConnectionState.DEVICE_DISCONNECTED
+            _ecuState.value = EcuConnectionState.NOT_STARTED
             _liveTelemetry.value = LiveSensorData.disconnected(
                 AppOperationMode.REAL_HARDWARE,
                 "อุปกรณ์ USB ถูกถอดออก (Device Detached)"
+            ).copy(
+                connectionState = _connectionState.value,
+                adapterState = _adapterState.value,
+                ecuState = _ecuState.value
             )
         }
     }
@@ -308,9 +382,15 @@ class UsbObdDriver(
             transport.close()
             activeDevice = null
             _connectionState.value = ConnectionState.DISCONNECTED
+            _adapterState.value = AdapterConnectionState.DISCONNECTED
+            _ecuState.value = EcuConnectionState.NOT_STARTED
             _liveTelemetry.value = LiveSensorData.disconnected(
                 AppOperationMode.REAL_HARDWARE,
                 "ตัดการเชื่อมต่ออุปกรณ์ USB เรียบร้อย"
+            ).copy(
+                connectionState = _connectionState.value,
+                adapterState = _adapterState.value,
+                ecuState = _ecuState.value
             )
         }
     }
@@ -321,10 +401,14 @@ class UsbObdDriver(
         }
         // Temporarily pause polling during DTC bus sweep
         pollingEngine.stopPolling()
-        val dtcResult = dtcScanner.performCompleteDtcScan()
-        // Resume polling
-        startPollingStream()
-        return@withContext dtcResult
+        return@withContext try {
+            dtcScanner.performCompleteDtcScan()
+        } finally {
+            // Always resume polling after the DTC sweep, including exceptional exits.
+            if (_connectionState.value == ConnectionState.CONNECTED && transport.isOpen()) {
+                startPollingStream()
+            }
+        }
     }
 
     suspend fun clearRealHardwareDtcs(): Result<Boolean> = withContext(Dispatchers.IO) {
@@ -332,9 +416,14 @@ class UsbObdDriver(
             return@withContext Result.failure(IllegalStateException("Not connected to ECU"))
         }
         pollingEngine.stopPolling()
-        val result = dtcScanner.clearDtcCodes()
-        startPollingStream()
-        return@withContext result
+        return@withContext try {
+            dtcScanner.clearDtcCodes()
+        } finally {
+            // Always resume polling after clear attempts when the ECU session remains active.
+            if (_connectionState.value == ConnectionState.CONNECTED && transport.isOpen()) {
+                startPollingStream()
+            }
+        }
     }
 
     fun release() {
