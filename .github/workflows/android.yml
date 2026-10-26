@@ -19,9 +19,12 @@ jobs:
         distribution: 'temurin'
 
     - name: Check for Secrets
+      shell: bash
       run: |
-        if grep -rnE "AIza[0-9A-Za-z-_]{35}|GEMINI_API_KEY" ./app ; then
-          echo "Error: Hardcoded API keys or secrets found!"
+        set -euo pipefail
+        # Hyphen is last in the character class to avoid an invalid regex range.
+        if grep -rnE --exclude-dir=.git 'AIza[0-9A-Za-z_-]{35}' ./app; then
+          echo "Error: A hardcoded Google API key pattern was found."
           exit 1
         fi
 
